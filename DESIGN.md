@@ -13,8 +13,3 @@ Tech stack:
 - sqlite database
 - HTMX if necessary
 - Simple, self-contained CSS
-
-Design:
-
-- Whimsy but informative
-- As few as possible (or no) AI signs
