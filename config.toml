@@ -1,0 +1,56 @@
+# kaputt.matze.lol — configuration.
+#
+# Targets are the only knobs: they are upserted into the database at startup,
+# so editing this file and restarting the service is the whole target
+# management. Removing a target disables it but keeps its history.
+
+listen = "127.0.0.1:8080"
+database = "kaputt.db"
+
+[[targets]]
+id = "karlsruhe"
+name = "Stadt Karlsruhe"
+url = "https://www.karlsruhe.de/"
+expect_status = 200
+interval_s = 300
+timeout_s = 10
+fail_threshold = 2
+ok_threshold = 2
+enabled = true
+sort = 10
+
+[[targets]]
+id = "stadtbibliothek"
+name = "Stadtbibliothek"
+url = "https://stadtbibliothek.karlsruhe.de/"
+expect_status = 200
+interval_s = 300
+timeout_s = 10
+fail_threshold = 2
+ok_threshold = 2
+enabled = true
+sort = 20
+
+[[targets]]
+id = "opac"
+name = "OPAC (Katalog)"
+url = "https://opac.karlsruhe.de/"
+expect_status = 200
+interval_s = 300
+timeout_s = 10
+fail_threshold = 2
+ok_threshold = 2
+enabled = true
+sort = 30
+
+[[targets]]
+id = "geoportal"
+name = "Geoportal"
+url = "https://geoportal.karlsruhe.de/"
+expect_status = 200
+interval_s = 300
+timeout_s = 10
+fail_threshold = 2
+ok_threshold = 2
+enabled = true
+sort = 40
