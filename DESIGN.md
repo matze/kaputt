@@ -13,3 +13,4 @@ Tech stack:
 - sqlite database
 - HTMX if necessary
 - Simple, self-contained CSS
+- Self-hosted Geist font

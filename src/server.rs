@@ -17,6 +17,7 @@ use crate::views;
 
 const STYLE: &str = include_str!("../assets/style.css");
 const HTMX: &str = include_str!("../assets/htmx.min.js");
+const GEIST: &[u8] = include_bytes!("../assets/fonts/geist-latin-wght.woff2");
 
 /// How many incidents the detail page lists.
 const DETAIL_INCIDENTS: u32 = 20;
@@ -49,6 +50,7 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         .route("/about", get(about))
         .route("/healthz", get(healthz))
         .route("/assets/style.css", get(style_css))
+        .route("/assets/geist.woff2", get(geist_woff2))
         .route("/assets/htmx.min.js", get(htmx_js))
         .with_state(App { store });
 
@@ -184,7 +186,16 @@ async fn htmx_js() -> Response {
     )
 }
 
-fn asset(content_type: &'static str, cache: &'static str, body: &'static str) -> Response {
+async fn geist_woff2() -> Response {
+    // One variable file, latin subset; it only changes with a deploy.
+    asset("font/woff2", "public, max-age=86400", GEIST)
+}
+
+fn asset(
+    content_type: &'static str,
+    cache: &'static str,
+    body: impl IntoResponse,
+) -> Response {
     (
         [
             (header::CONTENT_TYPE, content_type),

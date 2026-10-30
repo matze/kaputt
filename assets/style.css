@@ -1,6 +1,16 @@
 /* kaputt.matze.lol — von Hand, ein Akzent, Status nur als Punkt und Leiste.
    Keine Rahmen, keine Farbflächen: Text, Haarlinien, Zahlen. */
 
+/* Self-hosted Geist, SIL OFL 1.1 (assets/fonts/LICENSE-Geist.txt): one
+   variable file, latin subset, so no external font request leaves the page. */
+@font-face {
+  font-family: "Geist";
+  src: url("/assets/geist.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
   --bg: #ffffff;
@@ -33,8 +43,8 @@
 html {
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Helvetica Neue", Arial, sans-serif;
+  font: 16px/1.5 "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
   -webkit-text-size-adjust: 100%;
 }
 
@@ -53,30 +63,39 @@ a:hover { text-decoration: underline; }
   padding: 22px 20px 12px;
 }
 
-.brand { font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
+.brand { font-weight: 600; font-size: 17px; letter-spacing: -.01em; }
 .brand .ka { color: var(--down); }
-.site nav a { font-size: 13px; color: var(--muted); }
 
-.page { max-width: 700px; margin: 0 auto; padding: 0 20px 24px; }
-
-footer.site {
-  display: block;
+/* The nav link stays on the text baseline but gets a thumb-sized hit area. */
+.site nav a {
+  font-size: 14px;
   color: var(--muted);
-  font-size: 12px;
-  border-top: 1px solid var(--line);
-  padding-top: 14px;
+  padding: 14px 6px;
+  margin: -14px -6px;
 }
-footer.site p { margin: 0; }
+
+.page { max-width: 700px; margin: 0 auto; padding: 0 20px 32px; }
 
 /* Status ------------------------------------------------------------- */
 
 .dot {
   display: inline-block;
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   border-radius: 50%;
   background: var(--gap);
   flex: none;
+}
+
+/* The dot hangs into the page gutter so names and bars share one left edge. */
+.service-name,
+.detail-name { position: relative; }
+.service-name .dot,
+.detail-name .dot {
+  position: absolute;
+  left: -17px;
+  top: 50%;
+  transform: translateY(-50%);
 }
 .tone-up { background: var(--up); }
 .tone-warn { background: var(--warn); }
@@ -95,8 +114,8 @@ footer.site p { margin: 0; }
   grid-template-columns: minmax(0, 1.2fr) minmax(0, 2fr) 4rem;
   grid-template-areas: "name bars uptime";
   align-items: center;
-  gap: 0 14px;
-  padding: 10px 0;
+  gap: 0 18px;
+  padding: 13px 0;
 }
 
 .service-name {
@@ -106,6 +125,7 @@ footer.site p { margin: 0; }
   gap: 8px;
   min-width: 0;
   font-weight: 600;
+  font-size: 16px;
 }
 .service-name a {
   overflow: hidden;
@@ -137,13 +157,13 @@ footer.site p { margin: 0; }
 .service-uptime {
   grid-area: uptime;
   text-align: right;
-  font-size: 13px;
+  font-size: 14.5px;
   font-variant-numeric: tabular-nums;
 }
 
 .service-meta,
 .service-note {
-  font-size: 12.5px;
+  font-size: 13.5px;
   color: var(--muted);
 }
 
@@ -151,7 +171,7 @@ footer.site p { margin: 0; }
   grid-area: bars;
   display: flex;
   gap: 1px;
-  height: 8px;
+  height: 9px;
 }
 .bar { flex: 1 1 0; min-width: 0; background: var(--gap); }
 .bar.ok { background: var(--up); }
@@ -162,36 +182,36 @@ footer.site p { margin: 0; }
 /* Detail ------------------------------------------------------------- */
 
 h2 {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
-  margin: 24px 0 8px;
+  margin: 28px 0 10px;
 }
 
 .detail-name {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 4px;
-  font-size: 17px;
+  margin: 0 0 6px;
+  font-size: 21px;
 }
 
 .facts {
-  margin: 8px 0 0;
-  font-size: 12.5px;
+  margin: 10px 0 0;
+  font-size: 13.5px;
   color: var(--muted);
-  word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .windows {
-  margin: 6px 0 10px;
-  font-size: 12.5px;
+  margin: 6px 0 12px;
+  font-size: 13.5px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
 .chart { margin: 0; }
 .chart-svg { display: block; width: 100%; height: auto; }
-.chart figcaption { margin-top: 4px; font-size: 12px; color: var(--muted); }
+.chart figcaption { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
 
 .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 .axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
@@ -208,46 +228,76 @@ h2 {
 .rows {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
 }
 .rows th {
   text-align: left;
   font-weight: 500;
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--muted);
-  padding: 0 10px 4px 0;
+  padding: 0 10px 5px 0;
   border-bottom: 1px solid var(--line);
 }
 .rows td {
-  padding: 6px 10px 6px 0;
+  padding: 7px 10px 7px 0;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
 .rows .num { text-align: right; white-space: nowrap; }
+.rows td:first-child { white-space: nowrap; }
 .rows tr:last-child td { border-bottom: none; }
 
-.muted { color: var(--muted); font-size: 13px; }
+.muted { color: var(--muted); font-size: 14px; }
 
 /* About -------------------------------------------------------------- */
 
-.links { margin: 0; padding-left: 18px; font-size: 13px; }
-.links li { margin: 2px 0; }
-.page p { margin: 0 0 10px; font-size: 13px; }
+.links { margin: 0; padding-left: 18px; font-size: 14.5px; }
+.links li { margin: 3px 0; }
+.prose p { margin: 0 0 12px; font-size: 14.5px; }
 
 /* Phones ------------------------------------------------------------- */
 
 @media (max-width: 560px) {
-  .site { padding: 18px 16px 10px; }
-  .page { padding: 0 16px 20px; }
+  .site { padding: 20px 16px 12px; }
+  .page { padding: 0 16px 28px; }
   .service {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "name uptime"
       "bars bars";
-    row-gap: 5px;
+    row-gap: 6px;
   }
-  .bars { height: 7px; }
+  .bars { height: 8px; }
+  /* No 20px gutter on phones: the dot sits in the row instead of hanging. */
+  .service-name .dot,
+  .detail-name .dot {
+    position: static;
+    transform: none;
+  }
+  /* Incident table: date and duration on one line, cause beneath it. */
+  .rows thead { display: none; }
+  .rows,
+  .rows tbody { display: block; }
+  .rows tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "when span"
+      "cause cause";
+    column-gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .rows td {
+    display: block;
+    padding: 0;
+    border: none;
+  }
+  .rows td:nth-child(1) { grid-area: when; }
+  .rows td:nth-child(2) { grid-area: span; }
+  .rows td:nth-child(3) { grid-area: cause; }
+  .rows tr:last-child { border-bottom: none; }
   .axis-label { display: none; }
 }
 
