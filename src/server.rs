@@ -11,6 +11,7 @@ use axum::routing::get;
 
 use crate::config::Config;
 use crate::db::{self, Store, TargetState};
+use crate::rollup;
 use crate::scheduler;
 use crate::views;
 
@@ -36,6 +37,9 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
     } else {
         tracing::info!(targets = tasks.len(), "scheduler started");
     }
+    // The rollup loop keeps the day bars, the uptime windows and retention up
+    // to date; the first pass already ran before the listener was bound.
+    let _rollup = rollup::spawn(store.clone());
     tracing::info!(listen = %config.listen, "serving");
 
     let app = Router::new()
@@ -76,8 +80,8 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Build the overview rows: config state plus the last 90 days of checks per
-/// target. The bars and the uptime windows come from the same history.
+/// Build the overview rows: target state plus the last 90 days of rollups per
+/// target. The bars and the 90-day uptime come from the same rows.
 async fn cards(
     store: &Store,
     states: &[TargetState],
@@ -86,8 +90,9 @@ async fn cards(
     let grid = views::day_grid(now);
     let mut cards = Vec::with_capacity(states.len());
     for state in states {
-        let history = store.history_since(&state.id, grid.starts[0]).await?;
-        cards.push(views::card(state, &history, &grid, now));
+        let rows = store.daily_stats(&state.id, &grid.days[0]).await?;
+        let stats = views::day_stats(&rows, &grid);
+        cards.push(views::card(state, &stats, &grid, now));
     }
     Ok(cards)
 }
@@ -113,9 +118,14 @@ async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Respon
         return Err(AppError::NotFound);
     };
     let grid = views::day_grid(now);
-    let history = app.store.history_since(&state.id, grid.starts[0]).await?;
-    let target = views::card(&state, &history, &grid, now);
-    let windows = views::windows(&history, &grid, now);
+    let rows = app.store.daily_stats(&state.id, &grid.days[0]).await?;
+    let stats = views::day_stats(&rows, &grid);
+    let last_24h = app
+        .store
+        .history_since(&state.id, now - 24 * 3600)
+        .await?;
+    let target = views::card(&state, &stats, &grid, now);
+    let windows = views::windows(&stats, views::totals(&last_24h));
 
     let samples = app.store.latency_since(&id, now - 24 * 3600).await?;
     let incidents = app

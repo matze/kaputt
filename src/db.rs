@@ -370,6 +370,19 @@ pub struct TargetState {
 /// `ok` flag and timestamps of the checks since `since`, oldest first.
 pub type HistoryPoint = (i64, bool);
 
+/// One `daily_stats` row: a local day of one target, as the rollup stores it.
+/// `day` is the `YYYY-MM-DD` key from [`crate::day::key`], so text order is
+/// day order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DailyStat {
+    pub day: String,
+    pub checks: u32,
+    pub ok_checks: u32,
+    pub down_seconds: i64,
+    pub avg_latency_ms: Option<i64>,
+    pub max_latency_ms: Option<i64>,
+}
+
 impl Store {
     /// Enabled targets in display order, each with its newest state.
     pub async fn enabled_targets(&self) -> anyhow::Result<Vec<TargetState>> {
@@ -521,6 +534,178 @@ impl Store {
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Daily rollups and the retention that bounds both tables.
+impl Store {
+    /// Every target with the interval a rollup needs, enabled or not: the
+    /// history of a target dropped from the config keeps being rolled up.
+    pub async fn rollup_targets(&self) -> anyhow::Result<Vec<(String, i64)>> {
+        self.conn
+            .call(|conn| {
+                let mut stmt = conn.prepare("SELECT id, interval_s FROM targets ORDER BY id")?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Time of the oldest stored check; `None` when the target has none.
+    pub async fn first_check_ts(&self, target_id: &str) -> anyhow::Result<Option<i64>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let first = conn
+                    .query_row(
+                        "SELECT min(ts) FROM checks WHERE target_id = ?1",
+                        [&target_id],
+                        |row| row.get::<_, Option<i64>>(0),
+                    )
+                    .optional()?
+                    .flatten();
+                Ok::<_, rusqlite::Error>(first)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Newest day the rollup wrote for a target, as a day key.
+    pub async fn last_rolled_day(&self, target_id: &str) -> anyhow::Result<Option<String>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let day = conn
+                    .query_row(
+                        "SELECT max(day) FROM daily_stats WHERE target_id = ?1",
+                        [&target_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()?
+                    .flatten();
+                Ok::<_, rusqlite::Error>(day)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Checks of one local day, oldest first: `(ts, ok, latency_ms)`.
+    pub async fn checks_between(
+        &self,
+        target_id: &str,
+        start: i64,
+        end: i64,
+    ) -> anyhow::Result<Vec<(i64, bool, Option<i64>)>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT ts, ok, latency_ms FROM checks
+                     WHERE target_id = ?1 AND ts >= ?2 AND ts < ?3 ORDER BY ts, id",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![target_id, start, end], |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, Option<i64>>(2)?,
+                        ))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Write one day of rollup numbers, replacing what was there: a day that
+    /// was rolled while it was still running gets corrected on the next pass.
+    pub async fn upsert_daily_stat(&self, target_id: &str, stat: &DailyStat) -> anyhow::Result<()> {
+        let target_id = target_id.to_string();
+        let stat = stat.clone();
+        self.conn
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO daily_stats (
+                         target_id, day, checks, ok_checks, down_seconds,
+                         avg_latency_ms, max_latency_ms
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT (target_id, day) DO UPDATE SET
+                         checks = excluded.checks,
+                         ok_checks = excluded.ok_checks,
+                         down_seconds = excluded.down_seconds,
+                         avg_latency_ms = excluded.avg_latency_ms,
+                         max_latency_ms = excluded.max_latency_ms",
+                    rusqlite::params![
+                        target_id,
+                        stat.day,
+                        stat.checks,
+                        stat.ok_checks,
+                        stat.down_seconds,
+                        stat.avg_latency_ms,
+                        stat.max_latency_ms,
+                    ],
+                )?;
+                Ok::<(), rusqlite::Error>(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// Rollups of one target from `from_day` on, oldest first.
+    pub async fn daily_stats(&self, target_id: &str, from_day: &str) -> anyhow::Result<Vec<DailyStat>> {
+        let target_id = target_id.to_string();
+        let from_day = from_day.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT day, checks, ok_checks, down_seconds, avg_latency_ms, max_latency_ms
+                     FROM daily_stats WHERE target_id = ?1 AND day >= ?2 ORDER BY day",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![target_id, from_day], |row| {
+                        Ok(DailyStat {
+                            day: row.get(0)?,
+                            checks: row.get::<_, i64>(1)? as u32,
+                            ok_checks: row.get::<_, i64>(2)? as u32,
+                            down_seconds: row.get(3)?,
+                            avg_latency_ms: row.get(4)?,
+                            max_latency_ms: row.get(5)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Delete raw checks older than `before_ts`; returns the rows deleted.
+    pub async fn prune_checks(&self, before_ts: i64) -> anyhow::Result<usize> {
+        self.conn
+            .call(move |conn| {
+                let deleted = conn.execute("DELETE FROM checks WHERE ts < ?1", [before_ts])?;
+                Ok::<usize, rusqlite::Error>(deleted)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Delete rollups older than `before_day`; returns the rows deleted.
+    pub async fn prune_daily_stats(&self, before_day: &str) -> anyhow::Result<usize> {
+        let before_day = before_day.to_string();
+        self.conn
+            .call(move |conn| {
+                let deleted = conn.execute("DELETE FROM daily_stats WHERE day < ?1", [before_day])?;
+                Ok::<usize, rusqlite::Error>(deleted)
             })
             .await
             .map_err(Into::into)

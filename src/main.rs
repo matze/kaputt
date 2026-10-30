@@ -4,8 +4,10 @@
 //! `probe --once` runs a single round of checks, prints them, and stores them.
 
 mod config;
+mod day;
 mod db;
 mod probe;
+mod rollup;
 mod scheduler;
 mod server;
 mod views;
@@ -104,6 +106,9 @@ async fn main() -> anyhow::Result<()> {
 
     let store = Store::open(&config.database).await?;
     store.upsert_targets(&config.targets).await?;
+    // Catch the rollups up before the first page is served: the bars read
+    // them, so an empty table would mean 90 empty bars after every upgrade.
+    rollup::pass(&store, db::unix_now()).await?;
 
     match command {
         Command::Serve => server::run(config, store).await,

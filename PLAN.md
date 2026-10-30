@@ -101,6 +101,15 @@ daily_stats(target_id TEXT, day TEXT, checks INTEGER, ok_checks INTEGER,
   -- derived; kept 2 years
 ```
 
+`down_seconds` counts, for every failed check, the time up to the next check
+capped at the target's `interval_s`, clipped to the local day: five-minute
+probes make a failed check five minutes of downtime, and a hole in the data
+(host asleep, scheduler stopped) invents nothing. `avg_latency_ms` and
+`max_latency_ms` come from the successful checks only; a timeout is not a
+response time. The rollup pass runs every minute, rewrites the newest written
+day (a day rolled while it was still running gets corrected) and prunes only
+after it has caught up with the raw checks.
+
 Migrations: `PRAGMA user_version` plus an ordered list of SQL steps.
 
 ## Probe semantics
@@ -145,10 +154,10 @@ Migrations: `PRAGMA user_version` plus an ordered list of SQL steps.
   Short forms in rows ("vor 12 s", "42 Min"), full words only in the detail
   tables. No external requests.
 - No admin UI and no user reports in v1; targets come from `config.toml`.
-- Until step 6 lands, the overview computes uptime windows and the 90 daily
-  bars straight from the raw `checks` (the raw retention covers exactly that
-  window). Step 6 moves those numbers to `daily_stats` and adds retention
-  beyond the raw window; the templates do not change.
+- The 90 bars, the day note and the 7-day/90-day uptime come from
+  `daily_stats`; only the rolling 24 h figure and the latency chart read the
+  raw checks, because no day bucket can express them. Retention can therefore
+  cut the raw table at 90 days without the oldest bars losing checks.
 
 ## Deployment
 
@@ -186,7 +195,7 @@ the same jj commit as the work they describe.
 - [x] **5. Detail page** — latency SVG, incident history, recent checks.
   Acceptance: browser check of chart and incident list for a target with
   synthetic data.
-- [ ] **6. Aggregates** — the uptime percentages and the 90 daily bars already
+- [x] **6. Aggregates** — the uptime percentages and the 90 daily bars already
   exist in the UI, computed from raw checks in Rust with `jiff` day
   boundaries. What remains: write the daily rollup into `daily_stats`, keep
   those 2 years, delete raw checks after 90 days, and move the UI numbers to
@@ -216,7 +225,7 @@ once all of its work-order boxes are ticked.
 - [x] **Session 3 — steps 4–5** — overview + detail (same templates, CSS,
   layout). Exit: real browser smoke of live HTMX refresh and a 320 px
   viewport.
-- [ ] **Session 4 — step 6** — aggregates, rollups, retention. Exit:
+- [x] **Session 4 — step 6** — aggregates, rollups, retention. Exit:
   fixture-day percentages exact, DST boundary test green.
 - [ ] **Session 5 — step 7** — deploy, in its own session once hosting exists.
   Needs host access and is blocked on the vantage decision; keep it out of

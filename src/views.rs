@@ -4,14 +4,13 @@
 //! Templates stay dumb on purpose — every number, label and coordinate is
 //! computed here, where it can be tested without a browser.
 
-use std::sync::LazyLock;
+use std::collections::HashMap;
 
 use askama::Template;
 use jiff::civil::Date;
-use jiff::tz::TimeZone;
-use jiff::{Span, Timestamp};
 
-use crate::db::{CheckSummary, HistoryPoint, IncidentSummary, TargetState};
+use crate::day::{self, at, date_of};
+use crate::db::{CheckSummary, DailyStat, HistoryPoint, IncidentSummary, TargetState};
 
 /// Bars on the overview: one per day, including today.
 pub const BAR_DAYS: i64 = 90;
@@ -27,25 +26,6 @@ const PAD_LEFT: i64 = 40;
 const PAD_RIGHT: i64 = 8;
 const PAD_TOP: i64 = 10;
 const PAD_BOTTOM: i64 = 20;
-
-/// Everything lives in Berlin time: the day bars and every timestamp follow
-/// the city the page is about, DST included.
-static TZ: LazyLock<TimeZone> =
-    LazyLock::new(|| TimeZone::get("Europe/Berlin").unwrap_or(TimeZone::UTC));
-
-fn tz() -> &'static TimeZone {
-    &TZ
-}
-
-fn at(ts: i64) -> jiff::civil::DateTime {
-    tz().to_datetime(Timestamp::from_second(ts).unwrap_or(Timestamp::UNIX_EPOCH))
-}
-
-fn midnight(date: Date) -> i64 {
-    tz().to_zoned(date.at(0, 0, 0, 0))
-        .map(|zoned| zoned.timestamp().as_second())
-        .unwrap_or(0)
-}
 
 fn date_label(date: Date) -> String {
     format!("{:02}.{:02}.{}", date.day(), date.month(), date.year())
@@ -100,7 +80,7 @@ pub fn span_short(seconds: i64) -> String {
     if seconds < 86400 {
         return format!("{} Std", seconds / 3600);
     }
-    format!("{} Tage", seconds / 86400)
+    count(seconds / 86400, "Tag", "Tage")
 }
 
 fn count(n: i64, singular: &str, plural: &str) -> String {
@@ -217,56 +197,72 @@ fn latency(ms: Option<i64>) -> String {
 
 /// The rolling day grid the bars are drawn on, in Berlin local days.
 pub struct DayGrid {
-    /// Start of every day in the window, plus the start of tomorrow: 91
-    /// boundaries for 90 bars.
-    pub starts: Vec<i64>,
+    /// Database key of every bar's day (`2026-10-30`), oldest first. The
+    /// window ends today, so the last key is today's.
+    pub days: Vec<String>,
+    /// The same days for the hover text: `30.10.2026`.
     pub labels: Vec<String>,
 }
 
 pub fn day_grid(now: i64) -> DayGrid {
-    let today = at(now).date();
-    let mut starts = Vec::with_capacity(BAR_DAYS as usize + 1);
-    // The window ends today, so the last boundary is tomorrow's midnight.
-    for offset in 0..=BAR_DAYS {
-        let date = today
-            .checked_add(Span::new().days(offset - (BAR_DAYS - 1)))
-            .unwrap_or(today);
-        starts.push(midnight(date));
+    let today = date_of(now);
+    let mut days = Vec::with_capacity(BAR_DAYS as usize);
+    let mut labels = Vec::with_capacity(BAR_DAYS as usize);
+    for offset in 0..BAR_DAYS {
+        let date = day::shift(today, offset - (BAR_DAYS - 1));
+        days.push(day::key(date));
+        labels.push(date_label(date));
     }
-    let labels = starts[..BAR_DAYS as usize]
-        .iter()
-        .map(|&start| date_label(at(start).date()))
-        .collect();
-    DayGrid { starts, labels }
+    DayGrid { days, labels }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DayStat {
     pub checks: u32,
     pub ok: u32,
+    /// Time the target was down on that day, as the rollup measured it.
+    pub down_seconds: i64,
 }
 
-/// Sort the checks into the day buckets of `grid`.
-pub fn day_stats(history: &[HistoryPoint], grid: &DayGrid) -> Vec<DayStat> {
-    let mut stats = vec![DayStat { checks: 0, ok: 0 }; BAR_DAYS as usize];
-    for &(ts, ok) in history {
-        let index = grid.starts.partition_point(|&start| start <= ts);
-        if let Some(bucket) = index.checked_sub(1).and_then(|i| stats.get_mut(i)) {
-            bucket.checks += 1;
-            if ok {
-                bucket.ok += 1;
-            }
-        }
-    }
-    stats
+/// Sort the daily rollups into the buckets of `grid`; a day without a rollup
+/// stays an empty bar.
+pub fn day_stats(rows: &[DailyStat], grid: &DayGrid) -> Vec<DayStat> {
+    let by_day: HashMap<&str, &DailyStat> =
+        rows.iter().map(|row| (row.day.as_str(), row)).collect();
+    grid.days
+        .iter()
+        .map(
+            |day| match by_day.get(day.as_str()) {
+                Some(row) => DayStat {
+                    checks: row.checks,
+                    ok: row.ok_checks,
+                    down_seconds: row.down_seconds,
+                },
+                None => DayStat {
+                    checks: 0,
+                    ok: 0,
+                    down_seconds: 0,
+                },
+            },
+        )
+        .collect()
 }
 
-/// Checks and successes from `since` on.
-fn uptime(history: &[HistoryPoint], since: i64) -> (u32, u32) {
-    let start = history.partition_point(|&(ts, _)| ts < since);
-    let window = &history[start..];
-    let ok = window.iter().filter(|(_, ok)| *ok).count();
-    (ok as u32, window.len() as u32)
+/// Checks and successes of the checks in `history`, which is already the
+/// window: the detail page loads exactly the last 24 hours.
+pub fn totals(history: &[HistoryPoint]) -> (u32, u32) {
+    let ok = history.iter().filter(|(_, ok)| *ok).count();
+    (ok as u32, history.len() as u32)
+}
+
+/// Checks and successes over the last `days` buckets of `stats`.
+pub fn recent_totals(stats: &[DayStat], days: usize) -> (u32, u32) {
+    let start = stats.len().saturating_sub(days);
+    let window = &stats[start..];
+    (
+        window.iter().map(|stat| stat.ok).sum(),
+        window.iter().map(|stat| stat.checks).sum(),
+    )
 }
 
 #[derive(Clone)]
@@ -306,8 +302,10 @@ fn check_error(check: &CheckSummary) -> String {
     )
 }
 
-/// One row of the overview, and the head of the detail page.
-pub fn card(state: &TargetState, history: &[HistoryPoint], grid: &DayGrid, now: i64) -> TargetCard {
+/// One row of the overview, and the head of the detail page. The bars, the
+/// day note and the 90-day uptime come from the daily rollups; everything
+/// about the newest check comes from the check itself.
+pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) -> TargetCard {
     let (tone, meta, note) = match (&state.open_incident, &state.last_check) {
         (Some(incident), _) => {
             let mut meta = format!(
@@ -344,9 +342,6 @@ pub fn card(state: &TargetState, history: &[HistoryPoint], grid: &DayGrid, now: 
         (None, None) => ("unknown", "noch kein Check".to_string(), None),
     };
 
-    let stats = day_stats(history, grid);
-    let (uptime_ok, uptime_total) = uptime(history, grid.starts[0]);
-
     let measured = stats.iter().filter(|stat| stat.checks > 0).count();
     let flawed = stats.iter().filter(|stat| stat.ok < stat.checks).count();
     let mut bars = Vec::with_capacity(stats.len());
@@ -361,14 +356,16 @@ pub fn card(state: &TargetState, history: &[HistoryPoint], grid: &DayGrid, now: 
             } else {
                 "bad"
             };
-            (
-                tone,
-                format!(
-                    "{day}: {} ({} Checks)",
-                    percent(stat.ok, stat.checks),
-                    num_de(i64::from(stat.checks))
-                ),
-            )
+            let mut title = format!(
+                "{day}: {} ({} Checks",
+                percent(stat.ok, stat.checks),
+                num_de(i64::from(stat.checks))
+            );
+            if stat.down_seconds > 0 {
+                title.push_str(&format!(", {} kaputt", span_short(stat.down_seconds)));
+            }
+            title.push(')');
+            (tone, title)
         };
         bars.push(Bar { tone, title });
     }
@@ -386,6 +383,7 @@ pub fn card(state: &TargetState, history: &[HistoryPoint], grid: &DayGrid, now: 
         None => meta.clone(),
     };
 
+    let (uptime_ok, uptime_total) = recent_totals(stats, BAR_DAYS as usize);
     TargetCard {
         name: state.name.clone(),
         href: format!("/t/{}", state.id),
@@ -399,22 +397,26 @@ pub fn card(state: &TargetState, history: &[HistoryPoint], grid: &DayGrid, now: 
     }
 }
 
-/// Uptime of the three windows the detail page lists.
-pub fn windows(history: &[HistoryPoint], grid: &DayGrid, now: i64) -> Vec<Window> {
-    [
-        ("24 h", now - 86400),
-        ("7 Tage", now - 7 * 86400),
-        ("90 Tage", grid.starts[0]),
-    ]
-    .into_iter()
-    .map(|(label, since)| {
-        let (ok, total) = uptime(history, since);
+/// Uptime of the three windows the detail page lists. The day windows come
+/// from the rollups — day buckets, like the bars; the rolling 24 h comes from
+/// the raw checks, because no day bucket can express it.
+pub fn windows(stats: &[DayStat], last_24h: (u32, u32)) -> Vec<Window> {
+    let (week_ok, week_total) = recent_totals(stats, 7);
+    let (quarter_ok, quarter_total) = recent_totals(stats, BAR_DAYS as usize);
+    vec![
         Window {
-            label,
-            value: percent(ok, total),
-        }
-    })
-    .collect()
+            label: "24 h",
+            value: percent(last_24h.0, last_24h.1),
+        },
+        Window {
+            label: "7 Tage",
+            value: percent(week_ok, week_total),
+        },
+        Window {
+            label: "90 Tage",
+            value: percent(quarter_ok, quarter_total),
+        },
+    ]
 }
 
 pub struct Dot {
@@ -633,10 +635,19 @@ mod tests {
     use super::*;
 
     fn berlin(y: i16, m: i8, d: i8, hour: i8) -> i64 {
-        tz().to_zoned(Date::new(y, m, d).unwrap().at(hour, 0, 0, 0))
+        day::tz()
+            .to_zoned(Date::new(y, m, d).unwrap().at(hour, 0, 0, 0))
             .expect("Berlin time")
             .timestamp()
             .as_second()
+    }
+
+    fn stat(checks: u32, ok: u32, down_seconds: i64) -> DayStat {
+        DayStat {
+            checks,
+            ok,
+            down_seconds,
+        }
     }
 
     #[test]
@@ -708,56 +719,149 @@ mod tests {
     }
 
     #[test]
-    fn day_grid_spans_ninety_days_and_follows_berlin_dst() {
-        // Spring forward: 2026-03-29 is the last day of the window.
-        let grid = day_grid(berlin(2026, 3, 29, 12));
-        assert_eq!(grid.starts.len(), BAR_DAYS as usize + 1);
+    fn day_grid_is_ninety_consecutive_berlin_days_ending_today() {
+        let now = berlin(2026, 10, 30, 12);
+        let grid = day_grid(now);
+        assert_eq!(grid.days.len(), BAR_DAYS as usize);
         assert_eq!(grid.labels.len(), BAR_DAYS as usize);
-        assert_eq!(grid.labels.last().map(String::as_str), Some("29.03.2026"));
-        let index = grid.labels.len() - 1;
-        assert_eq!(grid.starts[index + 1] - grid.starts[index], 23 * 3600);
-
-        // Fall back: 2026-10-25 has 25 hours.
-        let grid = day_grid(berlin(2026, 10, 30, 12));
+        assert_eq!(grid.days.last().map(String::as_str), Some("2026-10-30"));
         assert_eq!(grid.labels.last().map(String::as_str), Some("30.10.2026"));
-        let index = grid
-            .labels
-            .iter()
-            .position(|label| label == "25.10.2026")
-            .expect("autumn day in window");
-        assert_eq!(grid.starts[index + 1] - grid.starts[index], 25 * 3600);
-        // Every other day in that window is a plain 24 hours.
-        for (position, labels) in grid.labels.iter().enumerate() {
-            if labels == "25.10.2026" {
-                continue;
-            }
-            assert_eq!(
-                grid.starts[position + 1] - grid.starts[position],
-                24 * 3600,
-                "{labels}"
-            );
+
+        // Every bar is the local day its key names, with no day missing: the
+        // window crosses the DST switch on 2026-10-25 and stays a day grid.
+        let today = date_of(now);
+        for (offset, (day, label)) in grid.days.iter().zip(&grid.labels).enumerate() {
+            let date = day::shift(today, offset as i64 - (BAR_DAYS - 1));
+            assert_eq!(day, &day::key(date), "{label}");
+            assert_eq!(label, &date_label(date), "{day}");
         }
+        assert!(grid.days.iter().any(|day| day == "2026-10-25"));
+
+        // The spring switch pulls the first bar of the window back a day too.
+        let grid = day_grid(berlin(2026, 3, 29, 12));
+        assert_eq!(grid.days.last().map(String::as_str), Some("2026-03-29"));
+        assert_eq!(grid.labels.first().map(String::as_str), Some("30.12.2025"));
     }
 
     #[test]
-    fn day_stats_use_day_boundaries_not_fixed_offsets() {
+    fn bars_follow_the_rollup_rows_by_day_key() {
         let now = berlin(2026, 10, 30, 12);
         let grid = day_grid(now);
-        let last = grid.labels.len() - 1;
-        // 23:30 yesterday, then 00:30 today: two buckets.
-        let late = grid.starts[last] - 1800;
-        let early = grid.starts[last] + 1800;
-        let history = vec![(late, true), (early, false)];
-        let stats = day_stats(&history, &grid);
-        assert_eq!(stats[last - 1], DayStat { checks: 1, ok: 1 });
-        assert_eq!(stats[last], DayStat { checks: 1, ok: 0 });
-        // Checks older than the window and inside tomorrow fall outside.
-        let stats = day_stats(
-            &[(grid.starts[0] - 1, false), (grid.starts[0] + 1, true)],
-            &grid,
+        assert_eq!(grid.days.len(), BAR_DAYS as usize);
+        assert_eq!(grid.days.last().map(String::as_str), Some("2026-10-30"));
+        let last = grid.days.len() - 1;
+        let rows = vec![
+            DailyStat {
+                day: grid.days[last - 1].clone(),
+                checks: 288,
+                ok_checks: 288,
+                down_seconds: 0,
+                avg_latency_ms: Some(90),
+                max_latency_ms: Some(400),
+            },
+            DailyStat {
+                day: grid.days[last].clone(),
+                checks: 100,
+                ok_checks: 95,
+                down_seconds: 1500,
+                avg_latency_ms: Some(120),
+                max_latency_ms: Some(900),
+            },
+            // Outside the window: must not land in any bar.
+            DailyStat {
+                day: "2000-01-01".to_string(),
+                checks: 5,
+                ok_checks: 0,
+                down_seconds: 1500,
+                avg_latency_ms: None,
+                max_latency_ms: None,
+            },
+        ];
+        let stats = day_stats(&rows, &grid);
+        assert_eq!(stats.len(), BAR_DAYS as usize);
+        assert_eq!(stats[last - 1], stat(288, 288, 0));
+        assert_eq!(stats[last], stat(100, 95, 1500));
+        assert_eq!(stats.iter().map(|day| day.checks).sum::<u32>(), 388);
+        // Days without a rollup stay empty, so the bar renders as a gap.
+        assert_eq!(stats[0], stat(0, 0, 0));
+    }
+
+    #[test]
+    fn windows_take_the_day_windows_from_rollups_and_24h_from_checks() {
+        let now = berlin(2026, 10, 30, 12);
+        let grid = day_grid(now);
+        let last = grid.days.len() - 1;
+        let rows: Vec<DailyStat> = (0..3)
+            .map(|offset| DailyStat {
+                day: grid.days[last - offset].clone(),
+                checks: 100,
+                ok_checks: 90,
+                down_seconds: 3000,
+                avg_latency_ms: Some(100),
+                max_latency_ms: Some(100),
+            })
+            .collect();
+        let listed = windows(&day_stats(&rows, &grid), (9, 10));
+        let labels: Vec<&str> = listed.iter().map(|window| window.label).collect();
+        assert_eq!(labels, vec!["24 h", "7 Tage", "90 Tage"]);
+        assert_eq!(listed[0].value, "90 %");
+        assert_eq!(listed[1].value, "90 %");
+        assert_eq!(listed[2].value, "90 %");
+
+        let empty = windows(&day_stats(&[], &grid), (0, 0));
+        assert_eq!(
+            empty
+                .iter()
+                .map(|window| window.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["—", "—", "—"]
         );
-        assert_eq!(stats[0], DayStat { checks: 1, ok: 1 });
-        assert_eq!(stats.iter().map(|stat| stat.checks).sum::<u32>(), 1);
+    }
+
+    #[test]
+    fn card_reads_uptime_and_downtime_from_the_rollup() {
+        let now = berlin(2026, 10, 30, 12);
+        let grid = day_grid(now);
+        let last = grid.days.len() - 1;
+        let rows = vec![DailyStat {
+            day: grid.days[last].clone(),
+            checks: 288,
+            ok_checks: 286,
+            down_seconds: 600,
+            avg_latency_ms: Some(100),
+            max_latency_ms: Some(200),
+        }];
+        let state = TargetState {
+            id: "opac".into(),
+            name: "OPAC".into(),
+            url: "https://opac.example.org/".into(),
+            expect_status: 200,
+            interval_s: 300,
+            last_check: Some(CheckSummary {
+                ts: now - 30,
+                ok: true,
+                status_code: Some(200),
+                latency_ms: Some(120),
+                error_kind: None,
+                error_detail: None,
+            }),
+            last_ok_ts: Some(now - 30),
+            open_incident: None,
+        };
+        let card = card(&state, &day_stats(&rows, &grid), &grid, now);
+        assert_eq!(card.tone, "up");
+        assert_eq!(card.uptime, "99,3 %");
+        assert_eq!(card.bars[last].tone, "warn");
+        assert_eq!(
+            card.bars[last].title,
+            "30.10.2026: 99,3 % (288 Checks, 10 Min kaputt)"
+        );
+        assert_eq!(card.bars_note, "1 von 1 Tagen mit Fehlschlägen.");
+        assert_eq!(card.bars[0].tone, "gap");
+        assert_eq!(
+            card.bars[0].title,
+            format!("{}: keine Checks", grid.labels[0])
+        );
     }
 
     #[test]
