@@ -333,6 +333,200 @@ impl Store {
     }
 }
 
+/// One `checks` row as the pages show it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckSummary {
+    pub ts: i64,
+    pub ok: bool,
+    pub status_code: Option<u16>,
+    pub latency_ms: Option<i64>,
+    pub error_kind: Option<String>,
+    pub error_detail: Option<String>,
+}
+
+/// One `incidents` row; `ended_at` is `None` while the incident runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncidentSummary {
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub cause: String,
+    pub detail: Option<String>,
+}
+
+/// A target plus what the pages need from its history: newest check, newest
+/// successful check, and the incident still open (if any).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetState {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub expect_status: u16,
+    pub interval_s: u32,
+    pub last_check: Option<CheckSummary>,
+    pub last_ok_ts: Option<i64>,
+    pub open_incident: Option<IncidentSummary>,
+}
+
+/// `ok` flag and timestamps of the checks since `since`, oldest first.
+pub type HistoryPoint = (i64, bool);
+
+impl Store {
+    /// Enabled targets in display order, each with its newest state.
+    pub async fn enabled_targets(&self) -> anyhow::Result<Vec<TargetState>> {
+        self.target_states(None, true).await
+    }
+
+    /// One target by id, enabled or not: a disabled target keeps its history
+    /// readable.
+    pub async fn target(&self, id: &str) -> anyhow::Result<Option<TargetState>> {
+        Ok(self
+            .target_states(Some(id.to_string()), false)
+            .await?
+            .into_iter()
+            .next())
+    }
+
+    async fn target_states(
+        &self,
+        only_id: Option<String>,
+        enabled: bool,
+    ) -> anyhow::Result<Vec<TargetState>> {
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT t.id, t.name, t.url, t.expect_status, t.interval_s,
+                            c.ts, c.ok, c.status_code, c.latency_ms, c.error_kind, c.error_detail,
+                            (SELECT max(ts) FROM checks WHERE target_id = t.id AND ok = 1),
+                            i.id, i.started_at, i.cause, i.detail
+                     FROM targets t
+                     LEFT JOIN checks c ON c.id =
+                         (SELECT max(id) FROM checks WHERE target_id = t.id)
+                     LEFT JOIN incidents i ON i.id =
+                         (SELECT id FROM incidents
+                          WHERE target_id = t.id AND ended_at IS NULL
+                          ORDER BY started_at DESC, id DESC LIMIT 1)
+                     WHERE (?1 IS NULL OR t.id = ?1) AND (?2 = 0 OR t.enabled = 1)
+                     ORDER BY t.sort, t.id",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![only_id, enabled as i64], |row| {
+                        let last_check = match row.get::<_, Option<i64>>(5)? {
+                            Some(ts) => Some(CheckSummary {
+                                ts,
+                                ok: row.get::<_, i64>(6)? != 0,
+                                status_code: row.get::<_, Option<i64>>(7)?.map(|c| c as u16),
+                                latency_ms: row.get::<_, Option<i64>>(8)?,
+                                error_kind: row.get(9)?,
+                                error_detail: row.get(10)?,
+                            }),
+                            None => None,
+                        };
+                        let last_ok_ts = row.get::<_, Option<i64>>(11)?;
+                        let open_incident = match row.get::<_, Option<i64>>(12)? {
+                            Some(_) => Some(IncidentSummary {
+                                started_at: row.get::<_, i64>(13)?,
+                                ended_at: None,
+                                cause: row.get::<_, String>(14)?,
+                                detail: row.get(15)?,
+                            }),
+                            None => None,
+                        };
+                        Ok(TargetState {
+                            id: row.get(0)?,
+                            name: row.get(1)?,
+                            url: row.get(2)?,
+                            expect_status: row.get::<_, i64>(3)? as u16,
+                            interval_s: row.get::<_, i64>(4)? as u32,
+                            last_check,
+                            last_ok_ts,
+                            open_incident,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Every check of one target from `since` on, oldest first.
+    pub async fn history_since(
+        &self,
+        target_id: &str,
+        since: i64,
+    ) -> anyhow::Result<Vec<HistoryPoint>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT ts, ok FROM checks WHERE target_id = ?1 AND ts >= ?2 ORDER BY ts, id",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![target_id, since], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? != 0))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Latency of the successful checks from `since` on, oldest first.
+    pub async fn latency_since(
+        &self,
+        target_id: &str,
+        since: i64,
+    ) -> anyhow::Result<Vec<(i64, i64)>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT ts, latency_ms FROM checks
+                     WHERE target_id = ?1 AND ts >= ?2 AND ok = 1 AND latency_ms IS NOT NULL
+                     ORDER BY ts, id",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![target_id, since], |row| {
+                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Newest incidents of one target, newest first.
+    pub async fn recent_incidents(
+        &self,
+        target_id: &str,
+        limit: u32,
+    ) -> anyhow::Result<Vec<IncidentSummary>> {
+        let target_id = target_id.to_string();
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT started_at, ended_at, cause, detail FROM incidents
+                     WHERE target_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2",
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![target_id, limit], |row| {
+                        Ok(IncidentSummary {
+                            started_at: row.get(0)?,
+                            ended_at: row.get(1)?,
+                            cause: row.get(2)?,
+                            detail: row.get(3)?,
+                        })
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+}
+
 /// Current wall-clock time as Unix seconds.
 pub fn unix_now() -> i64 {
     SystemTime::now()

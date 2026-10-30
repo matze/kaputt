@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}kaputt.matze.lol{% endblock %}</title>
+  <meta name="description" content="Antworten Karlsruher Stadtseiten, privat gemessen.">
+  <meta name="theme-color" content="#ffffff">
+  <link rel="stylesheet" href="/assets/style.css">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23cf222e'/%3E%3C/svg%3E">
+  <script src="/assets/htmx.min.js" defer></script>
+</head>
+<body>
+  <header class="site">
+    <a class="brand" href="/"><span class="ka">ka</span>putt.matze.lol</a>
+    <nav><a href="/about">Über</a></nav>
+  </header>
+  <main class="page">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site">
+    <p>Privat betrieben, keine Seite der Stadt Karlsruhe. Gemessen vom Server dieser Seite.</p>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Über — kaputt.matze.lol{% endblock %}
+{% block content %}
+<h1 class="detail-name">Wie diese Seite funktioniert</h1>
+
+<h2>Was geprüft wird</h2>
+<ul class="links">
+  {% for target in targets %}
+  <li><a href="{{ target.url }}" rel="noreferrer">{{ target.name }}</a> <span class="muted">alle {{ target.interval }}</span></li>
+  {% endfor %}
+</ul>
+
+<h2>Wie</h2>
+<p>Ein Abruf alle paar Minuten, ohne Cookies, nur auf den Status. Umleitungen werden verfolgt. Gezählt wird, ob die Antwort dem erwarteten Status entspricht – meist 200.</p>
+
+<h2>Wann „kaputt“</h2>
+<p>Zwei Fehlschläge in Folge gelten als Störung, zwei Erfolge als Ende. Ein einzelner Aussetzer steht nur als „zuletzt nicht geantwortet“ da. Eine Störung beginnt mit dem ersten Fehlschlag und endet mit dem ersten Erfolg.</p>
+
+<h2>Grenzen</h2>
+<p>Gemessen wird von einem Server aus. Erreicht der die Stadt nicht, steht hier „kaputt“, während anderswo alles antwortet. Eine Seite, die mit 200 antwortet und trotzdem Unsinn zeigt, gilt als gesund.</p>
+
+<h2>Datenschutz</h2>
+<p>Keine Cookies, kein Tracking, keine externen Schriften oder Skripte.</p>
+{% endblock %}

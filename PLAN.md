@@ -64,14 +64,15 @@ human can still spot anomalies, but nothing flags them automatically.
 ## Stack
 
 - Rust 2024, single binary, one SQLite file (WAL).
-- `axum` 0.8, `tokio` 1.54, `reqwest` 0.13 (rustls), `askama` 0.16 templates,
-  `tracing`.
+- `axum` 0.8, `tokio` 1.54, `reqwest` 0.13 (rustls), `askama` 0.16 templates
+  with `askama_web` (0.16, `axum-0.8`) for the response glue, `jiff` for
+  Europe/Berlin day boundaries, `tracing`.
 - SQLite via `tokio-rusqlite` 0.8 (async wrapper); it pins `rusqlite` 0.40, so
   add `rusqlite = { version = "0.40", features = ["bundled"] }` as a direct
   dependency to enable the bundled build.
-- HTMX 2.0.11 vendored into the binary for auto-refreshing status; no CDN, no
-  other JavaScript, no fonts.
-- CSS handwritten and embedded; no framework.
+- HTMX 2.0.11 vendored in `assets/`, embedded into the binary at compile time
+  for auto-refreshing status; no CDN, no other JavaScript, no fonts.
+- CSS handwritten in `assets/style.css` and embedded; no framework.
 
 Rationale: probe volume is tiny, so a single SQLite writer keeps the design
 boring; rusqlite avoids compile-time query macros and a database server;
@@ -123,20 +124,31 @@ Migrations: `PRAGMA user_version` plus an ordered list of SQL steps.
 
 ## Web UI (German, read-only)
 
-- `/` — overall banner, one row per target: state, uptime for 24 h / 7 d / 90 d,
-  90 daily bars, last check age, latency. HTMX polls `/partials/status` every
-  30 s.
-- `/t/{id}` — details: latency as inline SVG (server-rendered, no JS), incident
-  list, recent checks with status codes, URL/interval.
-- `/about` — what is checked, how often, from where, what "kaputt" means,
-  disclaimer that this is not an official city service, privacy note (no
-  cookies, no tracking).
+- `/` — one row per target: dot, name, 90-bar day strip, 90-day uptime. No
+  headline, no count, no rules between rows: the rows say everything. The
+  newest check and the failure reason live in a hover popup on the row (CSS
+  only, also on keyboard focus). HTMX polls `/partials/status` every 30 s.
+- `/t/{id}` — state line, URL and interval on one line, the 24 h / 7 d / 90 d
+  uptime on one line, the strip, latency as inline SVG (server-rendered, no JS),
+  incident table. Individual check rows are deliberately not listed: strip,
+  chart and incidents carry the same information.
+- `/about` — what is checked, how often, from where, what "kaputt" means, the
+  single-vantage limit, privacy note (no cookies, no tracking).
 - `/healthz` — liveness, no target requests.
-- State is not colour-only: text + shape + `aria-live` on the status region.
-- Whimsy: compact hand-written CSS, German microcopy ("Alles läuft",
-  "Gerade kaputt", "seit 3 Minuten"), small hand-drawn SVG marks, no emoji
-  spam, no AI-sounding filler. No external requests.
+- Design (review 2026-10-30, after a first pass read as loud and generic):
+  quiet and dense, modelled on the GitHub status page this project imitates.
+  Flat background, hairlines instead of cards, no tinted panels, one accent
+  colour, GitHub Primer palette, 14 px system font. Status shows as an 8 px
+  dot and the bar strip plus plain words ("nicht erreichbar") — never colour
+  alone; the `<section id="status">` carries `aria-live`.
+- Terse German, no banner headlines, no pills, no emoji, no exclamation marks.
+  Short forms in rows ("vor 12 s", "42 Min"), full words only in the detail
+  tables. No external requests.
 - No admin UI and no user reports in v1; targets come from `config.toml`.
+- Until step 6 lands, the overview computes uptime windows and the 90 daily
+  bars straight from the raw `checks` (the raw retention covers exactly that
+  window). Step 6 moves those numbers to `daily_stats` and adds retention
+  beyond the raw window; the templates do not change.
 
 ## Deployment
 
@@ -168,15 +180,18 @@ the same jj commit as the work they describe.
   jitter, hysteresis, incident transitions. Acceptance: simulated failure runs
   produce one incident with correct start/end and no duplicates; restart does
   not duplicate incidents.
-- [ ] **4. Overview UI** — Askama templates, embedded CSS/HTMX, status partial,
+- [x] **4. Overview UI** — Askama templates, embedded CSS/HTMX, status partial,
   responsive layout. Acceptance: real browser check of live updates and
   narrow viewport.
-- [ ] **5. Detail page** — latency SVG, incident history, recent checks.
+- [x] **5. Detail page** — latency SVG, incident history, recent checks.
   Acceptance: browser check of chart and incident list for a target with
   synthetic data.
-- [ ] **6. Aggregates** — daily rollup job, uptime math, 90-day bars, retention
-  (raw 90 days, rollups 2 years), Europe/Berlin day boundaries incl. DST.
-  Acceptance: fixture day with known failures yields exact percentages.
+- [ ] **6. Aggregates** — the uptime percentages and the 90 daily bars already
+  exist in the UI, computed from raw checks in Rust with `jiff` day
+  boundaries. What remains: write the daily rollup into `daily_stats`, keep
+  those 2 years, delete raw checks after 90 days, and move the UI numbers to
+  the rollups. Acceptance: fixture day with known failures yields exact
+  percentages from `daily_stats`; DST day test green.
 - [ ] **7. Deploy** — hosting must be chosen first; then systemd, proxy, backup,
   `probe --once` from the host, run for 24 h and compare against manual curls.
   Acceptance: page reflects real checks; 24 h comparison matches.
@@ -198,7 +213,7 @@ once all of its work-order boxes are ticked.
 - [x] **Session 2 — step 3** — scheduler + incidents. Entry contract: probe
   outcome type, `Store::insert_check`, recent-check query. Exit: hysteresis
   and restart-without-duplicate-incident tests green.
-- [ ] **Session 3 — steps 4–5** — overview + detail (same templates, CSS,
+- [x] **Session 3 — steps 4–5** — overview + detail (same templates, CSS,
   layout). Exit: real browser smoke of live HTMX refresh and a 320 px
   viewport.
 - [ ] **Session 4 — step 6** — aggregates, rollups, retention. Exit:

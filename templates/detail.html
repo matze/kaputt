@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}{{ target.name }} — kaputt.matze.lol{% endblock %}
+{% block content %}
+<h1 class="detail-name"><span class="dot tone-{{ target.tone }}" aria-hidden="true"></span>{{ target.name }}</h1>
+<p class="service-meta">{{ target.meta }}</p>
+{% match target.note %}
+{% when Some with (note) %}
+<p class="service-note">{{ note }}</p>
+{% when None %}
+{% endmatch %}
+<p class="facts"><a href="{{ url }}" rel="noreferrer">{{ url }}</a> · alle {{ interval_s }} s · erwartet {{ expect_status }}</p>
+<p class="windows">{% for window in windows %}{{ window.label }} {{ window.value }}{% if !loop.last %} · {% endif %}{% endfor %}</p>
+{% include "bars.html" %}
+
+<h2>Antwortzeit, 24 Stunden</h2>
+{% if chart.empty %}
+<p class="muted">{{ chart.caption }}</p>
+{% else %}
+<figure class="chart">
+  <svg class="chart-svg" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.alt }}">
+    <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_top }}" y2="{{ chart.y_top }}"></line>
+    <line class="axis" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_base }}" y2="{{ chart.y_base }}"></line>
+    {% for segment in chart.segments %}
+    <polyline class="latency" points="{{ segment }}"></polyline>
+    {% endfor %}
+    {% for dot in chart.dots %}
+    <circle class="latency-dot" cx="{{ dot.x }}" cy="{{ dot.y }}" r="2.5"></circle>
+    {% endfor %}
+    <text class="axis-label" x="0" y="{{ chart.label_top }}">{{ chart.max_label }}</text>
+    <text class="axis-label" x="0" y="{{ chart.label_base }}">{{ chart.zero_label }}</text>
+    <text class="axis-label" x="{{ chart.x_left }}" y="{{ chart.label_time }}">{{ chart.start_label }}</text>
+    <text class="axis-label" x="{{ chart.end_anchor_x }}" y="{{ chart.label_time }}" text-anchor="end">{{ chart.end_label }}</text>
+  </svg>
+  <figcaption>{{ chart.caption }}</figcaption>
+</figure>
+{% endif %}
+
+<h2>Störungen</h2>
+{% if incidents.is_empty() %}
+<p class="muted">Keine gespeichert.</p>
+{% else %}
+<table class="rows">
+  <thead><tr><th>Beginn</th><th class="num">Dauer</th><th>Ursache</th></tr></thead>
+  <tbody>
+    {% for incident in incidents %}
+    <tr>
+      <td>{{ incident.when }}</td>
+      <td class="num">{{ incident.span }}</td>
+      <td>{{ incident.cause }}{% match incident.detail %}{% when Some with (detail) %} – {{ detail }}{% when None %}{% endmatch %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+{% endblock %}

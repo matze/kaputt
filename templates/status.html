@@ -1,0 +1,19 @@
+<section id="status"
+         hx-get="/partials/status"
+         hx-trigger="every 30s"
+         hx-swap="outerHTML"
+         aria-live="polite">
+  {% if targets.is_empty() %}
+  <p class="muted">Keine Ziele konfiguriert.</p>
+  {% else %}
+  <ul class="services">
+    {% for target in targets %}
+    <li class="service" data-tip="{{ target.hover }}">
+      <span class="service-name"><span class="dot tone-{{ target.tone }}" aria-hidden="true"></span><a href="{{ target.href }}">{{ target.name }}</a></span>
+      {% include "bars.html" %}
+      <span class="service-uptime">{{ target.uptime }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>

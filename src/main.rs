@@ -8,6 +8,7 @@ mod db;
 mod probe;
 mod scheduler;
 mod server;
+mod views;
 
 use std::path::PathBuf;
 

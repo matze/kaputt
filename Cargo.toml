@@ -5,7 +5,10 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1"
+askama = "0.16"
+askama_web = { version = "0.16", features = ["axum-0.8"] }
 axum = "0.8"
+jiff = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [
     "rustls-no-provider",
     "gzip",

@@ -1,13 +1,29 @@
-//! HTTP surface and process wiring. Only the liveness endpoint exists so far;
-//! the UI pages come later. The probe scheduler runs alongside the server.
+//! HTTP surface: overview, detail page, the HTMX status partial, `/about`,
+//! liveness and two embedded assets. The probe scheduler runs alongside.
 
 use anyhow::Context;
+use askama_web::WebTemplate;
 use axum::Router;
+use axum::extract::{Path, State};
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
 use crate::config::Config;
-use crate::db::Store;
+use crate::db::{self, Store, TargetState};
 use crate::scheduler;
+use crate::views;
+
+const STYLE: &str = include_str!("../assets/style.css");
+const HTMX: &str = include_str!("../assets/htmx.min.js");
+
+/// How many incidents the detail page lists.
+const DETAIL_INCIDENTS: u32 = 20;
+
+#[derive(Clone)]
+struct App {
+    store: Store,
+}
 
 pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&config.listen)
@@ -22,12 +38,149 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
     }
     tracing::info!(listen = %config.listen, "serving");
 
-    let app = Router::new().route("/healthz", get(healthz));
+    let app = Router::new()
+        .route("/", get(overview))
+        .route("/partials/status", get(status_partial))
+        .route("/t/{id}", get(detail))
+        .route("/about", get(about))
+        .route("/healthz", get(healthz))
+        .route("/assets/style.css", get(style_css))
+        .route("/assets/htmx.min.js", get(htmx_js))
+        .with_state(App { store });
+
     axum::serve(listener, app).await.context("server failed")?;
     Ok(())
+}
+
+/// Everything a request can fail with, mapped to a plain-text response.
+enum AppError {
+    NotFound,
+    Internal(anyhow::Error),
+}
+
+impl From<anyhow::Error> for AppError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::Internal(error)
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::NotFound => (StatusCode::NOT_FOUND, "Nicht gefunden\n").into_response(),
+            Self::Internal(error) => {
+                tracing::error!(%error, "request failed");
+                (StatusCode::INTERNAL_SERVER_ERROR, "Interner Fehler\n").into_response()
+            }
+        }
+    }
+}
+
+/// Build the overview rows: config state plus the last 90 days of checks per
+/// target. The bars and the uptime windows come from the same history.
+async fn cards(
+    store: &Store,
+    states: &[TargetState],
+    now: i64,
+) -> anyhow::Result<Vec<views::TargetCard>> {
+    let grid = views::day_grid(now);
+    let mut cards = Vec::with_capacity(states.len());
+    for state in states {
+        let history = store.history_since(&state.id, grid.starts[0]).await?;
+        cards.push(views::card(state, &history, &grid, now));
+    }
+    Ok(cards)
+}
+
+async fn overview(State(app): State<App>) -> Result<Response, AppError> {
+    let now = db::unix_now();
+    let states = app.store.enabled_targets().await?;
+    let targets = cards(&app.store, &states, now).await?;
+    Ok(page(views::OverviewPage { targets }))
+}
+
+/// The region HTMX replaces every 30 seconds; same markup as the page body.
+async fn status_partial(State(app): State<App>) -> Result<Response, AppError> {
+    let now = db::unix_now();
+    let states = app.store.enabled_targets().await?;
+    let targets = cards(&app.store, &states, now).await?;
+    Ok(page(views::StatusPartial { targets }))
+}
+
+async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Response, AppError> {
+    let now = db::unix_now();
+    let Some(state) = app.store.target(&id).await? else {
+        return Err(AppError::NotFound);
+    };
+    let grid = views::day_grid(now);
+    let history = app.store.history_since(&state.id, grid.starts[0]).await?;
+    let target = views::card(&state, &history, &grid, now);
+    let windows = views::windows(&history, &grid, now);
+
+    let samples = app.store.latency_since(&id, now - 24 * 3600).await?;
+    let incidents = app
+        .store
+        .recent_incidents(&id, DETAIL_INCIDENTS)
+        .await?
+        .iter()
+        .map(|incident| views::incident_view(incident, now))
+        .collect();
+    Ok(page(views::DetailPage {
+        target,
+        url: state.url,
+        interval_s: state.interval_s,
+        expect_status: state.expect_status,
+        windows,
+        chart: views::chart(&samples, now),
+        incidents,
+    }))
+}
+
+async fn about(State(app): State<App>) -> Result<Response, AppError> {
+    let states = app.store.enabled_targets().await?;
+    Ok(page(views::AboutPage {
+        targets: states
+            .iter()
+            .map(|state| views::TargetLink {
+                name: state.name.clone(),
+                url: state.url.clone(),
+                interval: views::duration(i64::from(state.interval_s)),
+            })
+            .collect(),
+    }))
+}
+
+/// HTML is never cached: a status page must not show an outage that ended.
+fn page<T: askama::Template>(template: T) -> Response {
+    ([(header::CACHE_CONTROL, "no-store")], WebTemplate(template)).into_response()
 }
 
 /// Liveness only: no database query, no outbound request to a target.
 async fn healthz() -> &'static str {
     "ok"
+}
+
+async fn style_css() -> Response {
+    // The stylesheet changes with a deploy, so it revalidates every time; the
+    // vendored script never changes within a binary.
+    asset("text/css; charset=utf-8", "no-cache", STYLE)
+}
+
+async fn htmx_js() -> Response {
+    asset(
+        "text/javascript; charset=utf-8",
+        "public, max-age=86400",
+        HTMX,
+    )
+}
+
+fn asset(content_type: &'static str, cache: &'static str, body: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, cache),
+        ],
+        body,
+    )
+        .into_response()
 }
