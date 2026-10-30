@@ -6,6 +6,7 @@
 mod config;
 mod db;
 mod probe;
+mod scheduler;
 mod server;
 
 use std::path::PathBuf;
@@ -120,8 +121,7 @@ async fn probe_once(config: &Config, store: &Store) -> anyhow::Result<()> {
 
     let mut failed = 0;
     for target in &targets {
-        let outcome = prober.probe(target).await;
-        store.insert_check(&target.id, db::unix_now(), &outcome).await?;
+        let outcome = scheduler::check_once(store, &prober, target).await?;
         println!("{}", report_line(target, &outcome));
         if !outcome.ok {
             failed += 1;
@@ -176,8 +176,8 @@ mod tests {
 
     #[test]
     fn config_flag_is_honoured() {
-        let (path, command) = parse_args(&args(&["--config", "/etc/kaputt.toml", "serve"]))
-            .expect("valid args");
+        let (path, command) =
+            parse_args(&args(&["--config", "/etc/kaputt.toml", "serve"])).expect("valid args");
         assert_eq!(path, PathBuf::from("/etc/kaputt.toml"));
         assert_eq!(command, Command::Serve);
     }

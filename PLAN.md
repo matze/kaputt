@@ -92,6 +92,7 @@ checks(id INTEGER PK, target_id TEXT, ts INTEGER, ok INTEGER,
 
 incidents(id INTEGER PK, target_id TEXT, started_at INTEGER,
           ended_at INTEGER NULL, cause TEXT, detail TEXT)
+  -- unique partial index on (target_id) WHERE ended_at IS NULL
 
 daily_stats(target_id TEXT, day TEXT, checks INTEGER, ok_checks INTEGER,
             down_seconds INTEGER, avg_latency_ms INTEGER,
@@ -115,6 +116,9 @@ Migrations: `PRAGMA user_version` plus an ordered list of SQL steps.
   successes (default 2/2) to avoid flapping. An incident starts at the first
   failed check of the run and ends at the first successful check; the raw
   failed checks provide the exact windows.
+- The incident state machine keeps no memory of its own: every check re-derives
+  the trailing run and the open incident from the stored rows. A restart
+  resumes the same counters, and `probe --once` moves the same state.
 - Latency recorded on every check.
 
 ## Web UI (German, read-only)
@@ -160,7 +164,7 @@ the same jj commit as the work they describe.
   classification, insert into `checks`; local test server cases for 200, 500,
   timeout, redirect chain. Acceptance: tests green; `probe --once` usable on
   the host.
-- [ ] **3. Scheduler + incidents** — per-target loop, default 300 s interval,
+- [x] **3. Scheduler + incidents** — per-target loop, default 300 s interval,
   jitter, hysteresis, incident transitions. Acceptance: simulated failure runs
   produce one incident with correct start/end and no duplicates; restart does
   not duplicate incidents.
@@ -191,7 +195,7 @@ once all of its work-order boxes are ticked.
 - [x] **Session 1 — steps 1–2** — bootstrap + probe/storage (same
   schema/config surface). Exit: `cargo test` green, `/healthz` serves,
   `probe --once` exercises a local stub target.
-- [ ] **Session 2 — step 3** — scheduler + incidents. Entry contract: probe
+- [x] **Session 2 — step 3** — scheduler + incidents. Entry contract: probe
   outcome type, `Store::insert_check`, recent-check query. Exit: hysteresis
   and restart-without-duplicate-incident tests green.
 - [ ] **Session 3 — steps 4–5** — overview + detail (same templates, CSS,

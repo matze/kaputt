@@ -8,13 +8,14 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
+use rusqlite::OptionalExtension;
 use tokio_rusqlite::Connection;
 
 use crate::config::TargetConfig;
 use crate::probe::Outcome;
 
 /// Ordered schema migrations; step `n` moves `PRAGMA user_version` to `n + 1`.
-const MIGRATIONS: &[&str] = &[SCHEMA_V1];
+const MIGRATIONS: &[&str] = &[SCHEMA_V1, SCHEMA_V2];
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE targets (
@@ -67,6 +68,36 @@ CREATE TABLE daily_stats (
 ) STRICT;
 "#;
 
+/// One incident per target can be open at a time; the partial unique index
+/// makes a duplicated incident a write error instead of a silent data bug.
+const SCHEMA_V2: &str = r#"
+CREATE UNIQUE INDEX incidents_open_per_target ON incidents (target_id)
+    WHERE ended_at IS NULL;
+"#;
+
+/// Incident bookkeeping for one target, derived from the stored rows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetHistory {
+    /// Id of the incident still running, if any.
+    pub open_incident: Option<i64>,
+    /// First check of the trailing run of equal results, `None` when the
+    /// target has no checks yet.
+    pub run_head: Option<RunHead>,
+    /// Number of checks in that trailing run.
+    pub run_len: u32,
+}
+
+/// First check of the trailing run: its time and, for a failing run, the error
+/// that opened it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunHead {
+    pub ok: bool,
+    pub ts: i64,
+    pub error_kind: Option<String>,
+    pub error_detail: Option<String>,
+}
+
+#[derive(Clone)]
 pub struct Store {
     conn: Connection,
 }
@@ -178,6 +209,128 @@ impl Store {
             .await?;
         Ok(id)
     }
+
+    /// What the incident state machine needs to resume: the open incident and
+    /// the trailing run of equal check results. Row ids order the checks
+    /// because they are inserted in check order; two checks inside the same
+    /// second keep their sequence that way.
+    pub async fn target_history(&self, target_id: &str) -> anyhow::Result<TargetHistory> {
+        let target_id = target_id.to_string();
+        let history = self
+            .conn
+            .call(move |conn| {
+                let open_incident = conn
+                    .query_row(
+                        "SELECT id FROM incidents
+                         WHERE target_id = ?1 AND ended_at IS NULL
+                         ORDER BY started_at DESC, id DESC LIMIT 1",
+                        [&target_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+
+                let newest_ok = conn
+                    .query_row(
+                        "SELECT ok FROM checks WHERE target_id = ?1
+                         ORDER BY id DESC LIMIT 1",
+                        [&target_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?;
+                let Some(newest_ok) = newest_ok else {
+                    return Ok::<_, rusqlite::Error>(TargetHistory {
+                        open_incident,
+                        run_head: None,
+                        run_len: 0,
+                    });
+                };
+
+                // Everything after the newest check with the other result
+                // belongs to the trailing run.
+                let boundary: i64 = conn
+                    .query_row(
+                        "SELECT id FROM checks WHERE target_id = ?1 AND ok != ?2
+                         ORDER BY id DESC LIMIT 1",
+                        rusqlite::params![target_id, newest_ok],
+                        |row| row.get(0),
+                    )
+                    .optional()?
+                    .unwrap_or(0);
+
+                let run_len: i64 = conn.query_row(
+                    "SELECT count(*) FROM checks WHERE target_id = ?1 AND id > ?2",
+                    rusqlite::params![target_id, boundary],
+                    |row| row.get(0),
+                )?;
+                let (ts, error_kind, error_detail) = conn.query_row(
+                    "SELECT ts, error_kind, error_detail FROM checks WHERE id =
+                         (SELECT min(id) FROM checks WHERE target_id = ?1 AND id > ?2)",
+                    rusqlite::params![target_id, boundary],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, Option<String>>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                        ))
+                    },
+                )?;
+
+                Ok(TargetHistory {
+                    open_incident,
+                    run_head: Some(RunHead {
+                        ok: newest_ok != 0,
+                        ts,
+                        error_kind,
+                        error_detail,
+                    }),
+                    run_len: run_len as u32,
+                })
+            })
+            .await?;
+        Ok(history)
+    }
+
+    /// Insert an incident that starts at `started_at`. The schema allows only
+    /// one open incident per target, so a duplicate attempt fails here.
+    pub async fn open_incident(
+        &self,
+        target_id: &str,
+        started_at: i64,
+        cause: &str,
+        detail: Option<String>,
+    ) -> anyhow::Result<i64> {
+        let target_id = target_id.to_string();
+        let cause = cause.to_string();
+        let id = self
+            .conn
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO incidents (target_id, started_at, cause, detail)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    rusqlite::params![target_id, started_at, cause, detail],
+                )?;
+                Ok::<i64, rusqlite::Error>(conn.last_insert_rowid())
+            })
+            .await?;
+        Ok(id)
+    }
+
+    /// End an open incident. Closing an already closed incident is reported as
+    /// an error: the caller derives its state from the database and repairs
+    /// itself on the next check.
+    pub async fn close_incident(&self, incident_id: i64, ended_at: i64) -> anyhow::Result<()> {
+        let closed = self
+            .conn
+            .call(move |conn| {
+                conn.execute(
+                    "UPDATE incidents SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
+                    rusqlite::params![incident_id, ended_at],
+                )
+            })
+            .await?;
+        anyhow::ensure!(closed == 1, "incident {incident_id} was not open");
+        Ok(())
+    }
 }
 
 /// Current wall-clock time as Unix seconds.
@@ -215,7 +368,14 @@ mod tests {
     use tempfile::TempDir;
 
     /// `checks` row as read back by the tests: ts, ok, status, latency, kind, detail.
-    type CheckRow = (i64, i64, Option<i64>, Option<i64>, Option<String>, Option<String>);
+    type CheckRow = (
+        i64,
+        i64,
+        Option<i64>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+    );
 
     fn target(id: &str, name: &str) -> TargetConfig {
         TargetConfig {
@@ -289,7 +449,10 @@ mod tests {
     async fn open_is_idempotent() {
         let (_dir, path, _store) = open_temp().await;
         let store = Store::open(&path).await.expect("second open");
-        store.upsert_targets(&[target("opac", "OPAC")]).await.expect("upsert");
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
         assert_eq!(schema_version(&path), MIGRATIONS.len() as i64);
     }
 
@@ -331,8 +494,14 @@ mod tests {
             .await
             .expect("upsert");
 
-        let ok_id = store.insert_check("opac", 1000, &success()).await.expect("insert");
-        let fail_id = store.insert_check("opac", 1300, &failure()).await.expect("insert");
+        let ok_id = store
+            .insert_check("opac", 1000, &success())
+            .await
+            .expect("insert");
+        let fail_id = store
+            .insert_check("opac", 1300, &failure())
+            .await
+            .expect("insert");
         assert!(fail_id > ok_id);
 
         let conn = rusqlite::Connection::open(&path).expect("raw open");
@@ -379,7 +548,142 @@ mod tests {
             .insert_check("nope", unix_now(), &success())
             .await
             .expect_err("foreign key must reject");
-        assert!(err.to_string().to_lowercase().contains("foreign key"), "{err}");
+        assert!(
+            err.to_string().to_lowercase().contains("foreign key"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_history_is_empty_for_an_unchecked_target() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        let history = store.target_history("opac").await.expect("history");
+        assert_eq!(
+            history,
+            TargetHistory {
+                open_incident: None,
+                run_head: None,
+                run_len: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn target_history_reports_the_trailing_run_and_its_first_check() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        store
+            .insert_check("opac", 900, &success())
+            .await
+            .expect("insert");
+        store
+            .insert_check("opac", 1000, &failure())
+            .await
+            .expect("insert");
+        store
+            .insert_check("opac", 1100, &failure())
+            .await
+            .expect("insert");
+
+        let history = store.target_history("opac").await.expect("history");
+        assert_eq!(history.open_incident, None);
+        assert_eq!(history.run_len, 2);
+        let head = history.run_head.expect("head");
+        assert!(!head.ok);
+        assert_eq!(head.ts, 1000);
+        assert_eq!(head.error_kind.as_deref(), Some("timeout"));
+        assert_eq!(head.error_detail.as_deref(), Some("operation timed out"));
+
+        store
+            .insert_check("opac", 1200, &success())
+            .await
+            .expect("insert");
+        let history = store.target_history("opac").await.expect("history");
+        assert_eq!(history.run_len, 1);
+        let head = history.run_head.expect("head");
+        assert!(head.ok);
+        assert_eq!(head.ts, 1200);
+        assert_eq!(head.error_kind, None);
+    }
+
+    #[tokio::test]
+    async fn target_history_reports_the_open_incident() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        let id = store
+            .open_incident("opac", 1000, "timeout", Some("operation timed out".into()))
+            .await
+            .expect("open");
+        assert_eq!(
+            store
+                .target_history("opac")
+                .await
+                .expect("history")
+                .open_incident,
+            Some(id)
+        );
+        store.close_incident(id, 1200).await.expect("close");
+        assert_eq!(
+            store
+                .target_history("opac")
+                .await
+                .expect("history")
+                .open_incident,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn only_one_incident_can_be_open_per_target() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        let first = store
+            .open_incident("opac", 1000, "timeout", None)
+            .await
+            .expect("open");
+        let err = store
+            .open_incident("opac", 1100, "timeout", None)
+            .await
+            .expect_err("second open must be rejected");
+        assert!(err.to_string().to_lowercase().contains("unique"), "{err}");
+
+        store.close_incident(first, 1200).await.expect("close");
+        store
+            .open_incident("opac", 1300, "timeout", None)
+            .await
+            .expect("open after close");
+    }
+
+    #[tokio::test]
+    async fn closing_an_already_closed_incident_is_an_error() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        let id = store
+            .open_incident("opac", 1000, "timeout", None)
+            .await
+            .expect("open");
+        store.close_incident(id, 1200).await.expect("close");
+        let err = store
+            .close_incident(id, 1300)
+            .await
+            .expect_err("second close must be rejected");
+        assert!(err.to_string().contains("not open"), "{err}");
     }
 
     #[test]
