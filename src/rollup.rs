@@ -274,7 +274,7 @@ mod tests {
             }]
         );
         // The page shows the rollup, not the checks.
-        assert_eq!(views::percent(rows[0].ok_checks, rows[0].checks), "98,6 %");
+        assert_eq!(views::percent(rows[0].ok_checks, rows[0].checks), "98 %");
     }
 
     #[tokio::test]

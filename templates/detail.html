@@ -2,13 +2,12 @@
 {% block title %}{{ target.name }} — kaputt.matze.lol{% endblock %}
 {% block content %}
 <h1 class="detail-name"><span class="dot tone-{{ target.tone }}" aria-hidden="true"></span>{{ target.name }}</h1>
-<p class="service-meta">{{ target.meta }}</p>
 {% match target.note %}
 {% when Some with (note) %}
 <p class="service-note">{{ note }}</p>
 {% when None %}
 {% endmatch %}
-<p class="facts"><a href="{{ url }}" rel="noreferrer">{{ url }}</a> · alle {{ interval_s }} s · erwartet {{ expect_status }}</p>
+<p class="facts"><a href="{{ url }}" rel="noreferrer">{{ url }}</a></p>
 <p class="windows">{% for window in windows %}{{ window.label }} {{ window.value }}{% if !loop.last %} · {% endif %}{% endfor %}</p>
 {% include "bars.html" %}
 

@@ -122,10 +122,7 @@ async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Respon
     let grid = views::day_grid(now);
     let rows = app.store.daily_stats(&state.id, &grid.days[0]).await?;
     let stats = views::day_stats(&rows, &grid);
-    let last_24h = app
-        .store
-        .history_since(&state.id, now - 24 * 3600)
-        .await?;
+    let last_24h = app.store.history_since(&state.id, now - 24 * 3600).await?;
     let target = views::card(&state, &stats, &grid, now);
     let windows = views::windows(&stats, views::totals(&last_24h));
 
@@ -140,8 +137,6 @@ async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Respon
     Ok(page(views::DetailPage {
         target,
         url: state.url,
-        interval_s: state.interval_s,
-        expect_status: state.expect_status,
         windows,
         chart: views::chart(&samples, now),
         incidents,
@@ -191,11 +186,7 @@ async fn geist_woff2() -> Response {
     asset("font/woff2", "public, max-age=86400", GEIST)
 }
 
-fn asset(
-    content_type: &'static str,
-    cache: &'static str,
-    body: impl IntoResponse,
-) -> Response {
+fn asset(content_type: &'static str, cache: &'static str, body: impl IntoResponse) -> Response {
     (
         [
             (header::CONTENT_TYPE, content_type),

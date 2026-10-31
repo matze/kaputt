@@ -134,17 +134,13 @@ pub fn num_de(n: i64) -> String {
     if n < 0 { format!("-{out}") } else { out }
 }
 
-/// "99,8 %", "100 %", or an em dash when nothing was measured.
+/// "99 %", "100 %", or an em dash when nothing was measured. Rounded down, so
+/// 100 % only stands for a window without a single failure.
 pub fn percent(ok: u32, total: u32) -> String {
     if total == 0 {
         return "—".to_string();
     }
-    let tenths = (u64::from(ok) * 1000 + u64::from(total) / 2) / u64::from(total);
-    if tenths % 10 == 0 {
-        format!("{} %", tenths / 10)
-    } else {
-        format!("{},{:01} %", tenths / 10, tenths % 10)
-    }
+    format!("{} %", u64::from(ok) * 100 / u64::from(total))
 }
 
 /// German label for the `error_kind` vocabulary stored in the database.
@@ -231,20 +227,18 @@ pub fn day_stats(rows: &[DailyStat], grid: &DayGrid) -> Vec<DayStat> {
         rows.iter().map(|row| (row.day.as_str(), row)).collect();
     grid.days
         .iter()
-        .map(
-            |day| match by_day.get(day.as_str()) {
-                Some(row) => DayStat {
-                    checks: row.checks,
-                    ok: row.ok_checks,
-                    down_seconds: row.down_seconds,
-                },
-                None => DayStat {
-                    checks: 0,
-                    ok: 0,
-                    down_seconds: 0,
-                },
+        .map(|day| match by_day.get(day.as_str()) {
+            Some(row) => DayStat {
+                checks: row.checks,
+                ok: row.ok_checks,
+                down_seconds: row.down_seconds,
             },
-        )
+            None => DayStat {
+                checks: 0,
+                ok: 0,
+                down_seconds: 0,
+            },
+        })
         .collect()
 }
 
@@ -285,8 +279,6 @@ pub struct TargetCard {
     pub tone: &'static str,
     /// Uptime of the 90-day window shown by the bars.
     pub uptime: String,
-    /// Latest check, in one short line (detail page).
-    pub meta: String,
     /// Failure detail, when there is one (detail page).
     pub note: Option<String>,
     /// Everything the row knows, for the hover popup.
@@ -389,7 +381,6 @@ pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) ->
         href: format!("/t/{}", state.id),
         tone,
         uptime: percent(uptime_ok, uptime_total),
-        meta,
         note,
         hover,
         bars,
@@ -554,7 +545,7 @@ pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
             latency(Some(highest))
         ),
         caption: format!(
-            "{} Checks · Median {} · max {}",
+            "{} Messungen, Median = {}, Max = {}",
             num_de(samples.len() as i64),
             latency(Some(median)),
             latency(Some(highest))
@@ -617,8 +608,6 @@ pub struct StatusPartial {
 pub struct DetailPage {
     pub target: TargetCard,
     pub url: String,
-    pub interval_s: u32,
-    pub expect_status: u16,
     pub windows: Vec<Window>,
     pub chart: Chart,
     pub incidents: Vec<IncidentView>,
@@ -651,12 +640,13 @@ mod tests {
     }
 
     #[test]
-    fn percent_rounds_and_keeps_german_decimals() {
+    fn percent_is_a_whole_number_rounded_down() {
         assert_eq!(percent(0, 0), "—");
         assert_eq!(percent(288, 288), "100 %");
-        assert_eq!(percent(1, 288), "0,3 %");
-        assert_eq!(percent(287, 288), "99,7 %");
+        assert_eq!(percent(1, 288), "0 %");
+        assert_eq!(percent(287, 288), "99 %");
         assert_eq!(percent(1, 2), "50 %");
+        assert_eq!(percent(2, 3), "66 %");
     }
 
     #[test]
@@ -850,11 +840,11 @@ mod tests {
         };
         let card = card(&state, &day_stats(&rows, &grid), &grid, now);
         assert_eq!(card.tone, "up");
-        assert_eq!(card.uptime, "99,3 %");
+        assert_eq!(card.uptime, "99 %");
         assert_eq!(card.bars[last].tone, "warn");
         assert_eq!(
             card.bars[last].title,
-            "30.10.2026: 99,3 % (288 Checks, 10 Min kaputt)"
+            "30.10.2026: 99 % (288 Checks, 10 Min kaputt)"
         );
         assert_eq!(card.bars_note, "1 von 1 Tagen mit Fehlschlägen.");
         assert_eq!(card.bars[0].tone, "gap");

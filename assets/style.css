@@ -161,7 +161,6 @@ a:hover { text-decoration: underline; }
   font-variant-numeric: tabular-nums;
 }
 
-.service-meta,
 .service-note {
   font-size: 13.5px;
   color: var(--muted);
