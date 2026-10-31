@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build (must already exist)
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Verify tag matches Cargo.toml
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          tag="${TAG#v}"
+          crate="$(cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[] | select(.name=="kaputt") | .version')"
+          test "$tag" = "$crate" || { echo "tag $tag != Cargo.toml $crate"; exit 1; }
+
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    name: x86_64-unknown-linux-musl
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: kaputt
+          target: x86_64-unknown-linux-musl
+          archive: $bin-$tag-$target
+          tar: unix
+          checksum: sha256
+          locked: true
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
