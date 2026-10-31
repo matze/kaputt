@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.2.0]
+
 ### Added
 
 - Detail page latency chart switches between 24 hours, 7 days and 90 days;
