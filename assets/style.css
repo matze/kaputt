@@ -242,6 +242,7 @@ h2 {
 }
 .latency-dot { fill: var(--up); }
 .axis-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.y-label { dominant-baseline: middle; }
 
 .rows {
   width: 100%;

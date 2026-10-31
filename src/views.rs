@@ -21,11 +21,13 @@ pub const BAR_DAYS: i64 = 90;
 const CHART_BUCKETS: i64 = 240;
 
 const CHART_WIDTH: i64 = 720;
-const CHART_HEIGHT: i64 = 150;
-const PAD_LEFT: i64 = 40;
+const CHART_HEIGHT: i64 = 170;
+/// Gutter for the y labels. The labels grow at the mobile breakpoint, so the
+/// gutter has to fit their SVG font size rather than the desktop default.
+const PAD_LEFT: i64 = 84;
 const PAD_RIGHT: i64 = 8;
-const PAD_TOP: i64 = 10;
-const PAD_BOTTOM: i64 = 20;
+const PAD_TOP: i64 = 18;
+const PAD_BOTTOM: i64 = 34;
 
 fn date_label(date: Date) -> String {
     format!("{:02}.{:02}.{}", date.day(), date.month(), date.year())
@@ -188,6 +190,17 @@ fn latency(ms: Option<i64>) -> String {
     match ms {
         Some(ms) => format!("{} ms", num_de(ms)),
         None => "—".to_string(),
+    }
+}
+
+/// Axis labels use whole seconds only, so a slow target reads "10 s" instead
+/// of "10.000 ms". Everything else stays an integer number of milliseconds;
+/// there are no fractional seconds to read.
+fn axis_latency(ms: i64) -> String {
+    if ms >= 1000 && ms % 1000 == 0 {
+        format!("{} s", ms / 1000)
+    } else {
+        format!("{ms} ms")
     }
 }
 
@@ -490,14 +503,18 @@ pub struct Chart {
     pub alt: String,
     pub caption: String,
     pub max_label: String,
+    pub mid_label: String,
+    pub mid_visible: bool,
     pub zero_label: String,
     pub start_label: String,
     pub end_label: String,
     pub y_top: i64,
+    pub y_mid: i64,
     pub y_base: i64,
     pub x_left: i64,
     pub x_right: i64,
     pub label_top: i64,
+    pub label_mid: i64,
     pub label_base: i64,
     pub label_time: i64,
     pub end_anchor_x: i64,
@@ -560,15 +577,19 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
                 range.caption_period()
             ),
             max_label: String::new(),
+            mid_label: String::new(),
+            mid_visible: false,
             zero_label: String::new(),
             start_label: String::new(),
             end_label: String::new(),
             y_top: top,
+            y_mid: (top + base) / 2,
             y_base: base,
             x_left: left,
             x_right: right,
-            label_top: top + 4,
-            label_base: base + 4,
+            label_top: top,
+            label_mid: (top + base) / 2,
+            label_base: base,
             label_time: CHART_HEIGHT - 4,
             end_anchor_x: right,
         };
@@ -580,6 +601,10 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
     let bucket_span = (span + CHART_BUCKETS - 1) / CHART_BUCKETS;
     let x_of = |ts: i64| left + (ts - start) * (right - left) / span;
     let y_of = |ms: i64| base - ms * (base - top) / scale;
+    // A midpoint tick only makes sense on an even scale; the nice values are
+    // even from 2 ms upward.
+    let mid_visible = scale >= 2 && scale % 2 == 0;
+    let y_mid = y_of(scale / 2);
 
     // Average every bucket so long windows stay smooth instead of drawing
     // tens of thousands of individual samples.
@@ -650,16 +675,24 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
             latency(Some(median)),
             latency(Some(highest))
         ),
-        max_label: latency(Some(scale)),
+        max_label: axis_latency(scale),
+        mid_label: if mid_visible {
+            axis_latency(scale / 2)
+        } else {
+            String::new()
+        },
+        mid_visible,
         zero_label: "0".to_string(),
         start_label: chart_stamp(range, start),
         end_label: chart_stamp(range, now),
         y_top: top,
+        y_mid,
         y_base: base,
         x_left: left,
         x_right: right,
-        label_top: top + 4,
-        label_base: base + 4,
+        label_top: top,
+        label_mid: y_mid,
+        label_base: base,
         label_time: CHART_HEIGHT - 4,
         end_anchor_x: right,
     }
@@ -984,12 +1017,38 @@ mod tests {
         assert_eq!(chart.segments.len(), 2);
         assert_eq!(chart.dots.len(), 2);
         assert_eq!(chart.max_label, "200 ms");
+        assert_eq!(chart.mid_label, "100 ms");
+        assert!(chart.mid_visible);
         let scale = 200;
         let span = chart.y_base - chart.y_top;
         assert_eq!(chart.dots[0].x, chart.x_left);
         assert_eq!(chart.dots[0].y, chart.y_base - 100 * span / scale);
         assert_eq!(chart.dots[1].x, chart.x_right);
         assert_eq!(chart.dots[1].y, chart.y_base - 200 * span / scale);
+        assert_eq!(chart.y_mid, chart.y_base - 100 * span / scale);
+    }
+
+    #[test]
+    fn chart_axis_uses_seconds_and_adds_the_half_tick() {
+        let now = 1_000_000;
+        let slow = chart(&[(now - 10, 10_000)], now, ChartRange::Day);
+        assert_eq!(slow.max_label, "10 s");
+        assert_eq!(slow.mid_label, "5 s");
+        assert!(slow.mid_visible);
+        assert_eq!(slow.zero_label, "0");
+
+        let fractional = chart(&[(now - 10, 2_500)], now, ChartRange::Day);
+        assert_eq!(fractional.max_label, "5 s");
+        assert_eq!(fractional.mid_label, "2500 ms");
+    }
+
+    #[test]
+    fn axis_labels_stay_in_integer_milliseconds() {
+        assert_eq!(axis_latency(999), "999 ms");
+        assert_eq!(axis_latency(1_000), "1 s");
+        assert_eq!(axis_latency(1_400), "1400 ms");
+        assert_eq!(axis_latency(2_500), "2500 ms");
+        assert_eq!(axis_latency(10_000), "10 s");
     }
 
     #[test]

@@ -24,6 +24,9 @@
 <figure class="chart">
   <svg class="chart-svg" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.alt }}">
     <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_top }}" y2="{{ chart.y_top }}"></line>
+    {% if chart.mid_visible %}
+    <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_mid }}" y2="{{ chart.y_mid }}"></line>
+    {% endif %}
     <line class="axis" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_base }}" y2="{{ chart.y_base }}"></line>
     {% for segment in chart.segments %}
     <polyline class="latency" points="{{ segment }}"></polyline>
@@ -31,8 +34,11 @@
     {% for dot in chart.dots %}
     <circle class="latency-dot" cx="{{ dot.x }}" cy="{{ dot.y }}" r="2.5"></circle>
     {% endfor %}
-    <text class="axis-label" x="0" y="{{ chart.label_top }}">{{ chart.max_label }}</text>
-    <text class="axis-label" x="0" y="{{ chart.label_base }}">{{ chart.zero_label }}</text>
+    <text class="axis-label y-label" x="0" y="{{ chart.label_top }}">{{ chart.max_label }}</text>
+    {% if chart.mid_visible %}
+    <text class="axis-label y-label" x="0" y="{{ chart.label_mid }}">{{ chart.mid_label }}</text>
+    {% endif %}
+    <text class="axis-label y-label" x="0" y="{{ chart.label_base }}">{{ chart.zero_label }}</text>
     <text class="axis-label" x="{{ chart.x_left }}" y="{{ chart.label_time }}">{{ chart.start_label }}</text>
     <text class="axis-label" x="{{ chart.end_anchor_x }}" y="{{ chart.label_time }}" text-anchor="end">{{ chart.end_label }}</text>
   </svg>
