@@ -212,6 +212,25 @@ h2 {
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart figcaption { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
 
+.chart-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  flex-wrap: wrap;
+  margin: 28px 0 10px;
+}
+.chart-head h2 { margin: 0; }
+.chart-ranges {
+  display: flex;
+  gap: 12px;
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+.chart-ranges a { color: var(--muted); }
+.chart-ranges a:hover { color: var(--fg); }
+.chart-ranges a[aria-current="page"] { color: var(--fg); font-weight: 600; }
+
 .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 .axis { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .latency {

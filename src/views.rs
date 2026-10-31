@@ -14,11 +14,11 @@ use crate::db::{CheckSummary, DailyStat, HistoryPoint, IncidentSummary, TargetSt
 
 /// Bars on the overview: one per day, including today.
 pub const BAR_DAYS: i64 = 90;
-/// Window of the latency chart on the detail page.
-const CHART_SECONDS: i64 = 24 * 3600;
-/// A pause in latency samples longer than this starts a new line segment, so
-/// an outage is a gap instead of a misleading straight line.
-const CHART_GAP_SECONDS: i64 = 1800;
+/// Horizontal buckets of the latency chart. Raw checks arrive every few
+/// minutes, so one bucket per sample would draw a dense, jagged line in the
+/// short window and tens of thousands of points in the long one. Averaging
+/// into 240 buckets keeps every window to one point per few pixels.
+const CHART_BUCKETS: i64 = 240;
 
 const CHART_WIDTH: i64 = 720;
 const CHART_HEIGHT: i64 = 150;
@@ -243,7 +243,7 @@ pub fn day_stats(rows: &[DailyStat], grid: &DayGrid) -> Vec<DayStat> {
 }
 
 /// Checks and successes of the checks in `history`, which is already the
-/// window: the detail page loads exactly the last 24 hours.
+/// window the caller loaded.
 pub fn totals(history: &[HistoryPoint]) -> (u32, u32) {
     let ok = history.iter().filter(|(_, ok)| *ok).count();
     (ok as u32, history.len() as u32)
@@ -410,6 +410,71 @@ pub fn windows(stats: &[DayStat], last_24h: (u32, u32)) -> Vec<Window> {
     ]
 }
 
+/// Windows the detail chart can show. The parameter strings are the public
+/// `?range=` values; everything else is German UI text.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ChartRange {
+    #[default]
+    Day,
+    Week,
+    Quarter,
+}
+
+impl ChartRange {
+    pub const ALL: [ChartRange; 3] = [Self::Day, Self::Week, Self::Quarter];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "24h" => Some(Self::Day),
+            "7d" => Some(Self::Week),
+            "90d" => Some(Self::Quarter),
+            _ => None,
+        }
+    }
+
+    pub fn param(self) -> &'static str {
+        match self {
+            Self::Day => "24h",
+            Self::Week => "7d",
+            Self::Quarter => "90d",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Day => "24 h",
+            Self::Week => "7 Tage",
+            Self::Quarter => "90 Tage",
+        }
+    }
+
+    pub fn seconds(self) -> i64 {
+        match self {
+            Self::Day => 24 * 3600,
+            Self::Week => 7 * 86400,
+            Self::Quarter => BAR_DAYS * 86400,
+        }
+    }
+
+    /// Genitive for the chart alt text: "der letzten …".
+    fn alt_period(self) -> &'static str {
+        match self {
+            Self::Day => "24 Stunden",
+            Self::Week => "7 Tage",
+            Self::Quarter => "90 Tage",
+        }
+    }
+
+    /// Dative after "in den letzten …" for the empty caption.
+    fn caption_period(self) -> &'static str {
+        match self {
+            Self::Day => "24 Stunden",
+            Self::Week => "7 Tagen",
+            Self::Quarter => "90 Tagen",
+        }
+    }
+}
+
 pub struct Dot {
     pub x: i64,
     pub y: i64,
@@ -453,8 +518,24 @@ fn nice_max(value: i64) -> i64 {
     magnitude * 10
 }
 
-pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
-    let start = now - CHART_SECONDS;
+#[derive(Clone, Copy, Default)]
+struct Bucket {
+    ts_sum: i64,
+    ms_sum: i64,
+    count: i64,
+}
+
+/// Axis stamps: time of day in the short window, dates in the long ones.
+fn chart_stamp(range: ChartRange, ts: i64) -> String {
+    match range {
+        ChartRange::Day => short_stamp(ts),
+        ChartRange::Week | ChartRange::Quarter => date_label(date_of(ts)),
+    }
+}
+
+pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
+    let window = range.seconds();
+    let start = now - window;
     let samples: Vec<(i64, i64)> = samples
         .iter()
         .copied()
@@ -474,7 +555,10 @@ pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
             segments: Vec::new(),
             dots: Vec::new(),
             alt: "Keine Messwerte".to_string(),
-            caption: "Keine erfolgreichen Checks in den letzten 24 Stunden.".to_string(),
+            caption: format!(
+                "Keine erfolgreichen Checks in den letzten {}.",
+                range.caption_period()
+            ),
             max_label: String::new(),
             zero_label: String::new(),
             start_label: String::new(),
@@ -492,27 +576,42 @@ pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
 
     let highest = samples.iter().map(|&(_, ms)| ms).max().unwrap_or(0);
     let scale = nice_max(highest);
-    let span = (now - start).max(1);
+    let span = window.max(1);
+    let bucket_span = (span + CHART_BUCKETS - 1) / CHART_BUCKETS;
     let x_of = |ts: i64| left + (ts - start) * (right - left) / span;
     let y_of = |ms: i64| base - ms * (base - top) / scale;
 
-    let mut segments = Vec::new();
-    let mut dots = Vec::new();
-    let mut current: Vec<(i64, i64)> = Vec::new();
-    let mut previous: Option<i64> = None;
+    // Average every bucket so long windows stay smooth instead of drawing
+    // tens of thousands of individual samples.
+    let mut buckets = vec![Bucket::default(); CHART_BUCKETS as usize];
     for &(ts, ms) in &samples {
-        let jump = previous.is_some_and(|last| ts - last > CHART_GAP_SECONDS);
-        if jump && !current.is_empty() {
-            segments.push(current);
-            current = Vec::new();
+        let index = ((ts - start) / bucket_span).clamp(0, CHART_BUCKETS - 1) as usize;
+        let bucket = &mut buckets[index];
+        bucket.ts_sum += ts;
+        bucket.ms_sum += ms;
+        bucket.count += 1;
+    }
+
+    // An empty bucket is a stretch without a successful check: finish the
+    // current line there so an outage is a gap, not a straight interpolation.
+    let mut segments: Vec<Vec<(i64, i64)>> = Vec::new();
+    let mut current: Vec<(i64, i64)> = Vec::new();
+    for bucket in buckets {
+        if bucket.count == 0 {
+            if !current.is_empty() {
+                segments.push(std::mem::take(&mut current));
+            }
+            continue;
         }
+        let ts = bucket.ts_sum / bucket.count;
+        let ms = bucket.ms_sum / bucket.count;
         current.push((x_of(ts), y_of(ms)));
-        previous = Some(ts);
     }
     if !current.is_empty() {
         segments.push(current);
     }
 
+    let mut dots = Vec::new();
     let segments = segments
         .into_iter()
         .map(|points| {
@@ -540,7 +639,8 @@ pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
         segments,
         dots,
         alt: format!(
-            "Antwortzeiten der letzten 24 Stunden zwischen {} und {}",
+            "Antwortzeiten der letzten {} zwischen {} und {}",
+            range.alt_period(),
             latency(Some(lowest)),
             latency(Some(highest))
         ),
@@ -552,8 +652,8 @@ pub fn chart(samples: &[(i64, i64)], now: i64) -> Chart {
         ),
         max_label: latency(Some(scale)),
         zero_label: "0".to_string(),
-        start_label: short_stamp(start),
-        end_label: short_stamp(now),
+        start_label: chart_stamp(range, start),
+        end_label: chart_stamp(range, now),
         y_top: top,
         y_base: base,
         x_left: left,
@@ -591,6 +691,25 @@ pub struct TargetLink {
     pub interval: String,
 }
 
+#[derive(Clone)]
+pub struct RangeLink {
+    pub label: &'static str,
+    pub href: String,
+    pub active: bool,
+}
+
+/// The three chart-range links of one target, with the current one marked.
+pub fn range_links(target_id: &str, active: ChartRange) -> Vec<RangeLink> {
+    ChartRange::ALL
+        .into_iter()
+        .map(|range| RangeLink {
+            label: range.label(),
+            href: format!("/t/{target_id}?range={}#chart", range.param()),
+            active: range == active,
+        })
+        .collect()
+}
+
 #[derive(Template)]
 #[template(path = "overview.html")]
 pub struct OverviewPage {
@@ -609,6 +728,7 @@ pub struct DetailPage {
     pub target: TargetCard,
     pub url: String,
     pub windows: Vec<Window>,
+    pub range_links: Vec<RangeLink>,
     pub chart: Chart,
     pub incidents: Vec<IncidentView>,
 }
@@ -858,8 +978,8 @@ mod tests {
     fn chart_maps_values_into_the_plot_area() {
         let now = 1_000_000;
         // Two samples far apart: one point per segment, both drawn as dots.
-        let samples = vec![(now - CHART_SECONDS, 100), (now, 200)];
-        let chart = chart(&samples, now);
+        let samples = vec![(now - 24 * 3600, 100), (now, 200)];
+        let chart = chart(&samples, now, ChartRange::Day);
         assert!(!chart.empty);
         assert_eq!(chart.segments.len(), 2);
         assert_eq!(chart.dots.len(), 2);
@@ -878,10 +998,51 @@ mod tests {
         let samples: Vec<(i64, i64)> = (0..10)
             .map(|index| (now - 3600 + index * 300, 120 + index))
             .collect();
-        let chart = chart(&samples, now);
+        let chart = chart(&samples, now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 1);
-        assert_eq!(chart.segments[0].split(' ').count(), 10);
+        // Buckets average neighboring samples, so the line gets fewer points
+        // than the raw checks but stays one continuous segment.
+        assert!(chart.segments[0].split(' ').count() <= samples.len());
         assert!(chart.dots.is_empty());
+    }
+
+    #[test]
+    fn chart_averages_samples_inside_a_bucket() {
+        let now = 1_000_000;
+        // Both samples land in the last bucket of the 24 h window.
+        let chart = chart(&[(now - 100, 100), (now - 50, 200)], now, ChartRange::Day);
+        assert_eq!(chart.dots.len(), 1);
+        assert_eq!(chart.max_label, "200 ms");
+        let span = chart.y_base - chart.y_top;
+        assert_eq!(chart.dots[0].y, chart.y_base - 150 * span / 200);
+    }
+
+    #[test]
+    fn chart_uses_the_selected_window() {
+        let now = 1_000_000;
+        let samples = vec![(now - 8 * 86400, 120), (now - 3600, 130)];
+
+        let points = |chart: &Chart| -> usize {
+            chart
+                .segments
+                .iter()
+                .map(|segment| segment.split(' ').count())
+                .sum()
+        };
+
+        // The sample eight days back is outside the week, but both samples
+        // are inside the quarter.
+        let week = chart(&samples, now, ChartRange::Week);
+        assert_eq!(points(&week), 1);
+        assert!(!week.start_label.contains(':'));
+
+        let day = chart(&samples, now, ChartRange::Day);
+        assert_eq!(points(&day), 1);
+        assert!(day.start_label.contains(':'));
+
+        let quarter = chart(&samples, now, ChartRange::Quarter);
+        assert_eq!(points(&quarter), 2);
+        assert!(!quarter.start_label.contains(':'));
     }
 
     #[test]
@@ -893,22 +1054,60 @@ mod tests {
             (now - 60, 140),
             (now, 150),
         ];
-        let chart = chart(&samples, now);
+        let chart = chart(&samples, now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 2);
     }
 
     #[test]
     fn chart_marks_a_single_sample_with_a_dot() {
         let now = 1_000_000;
-        let chart = chart(&[(now - 10, 120)], now);
+        let chart = chart(&[(now - 10, 120)], now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 1);
         assert_eq!(chart.dots.len(), 1);
     }
 
     #[test]
     fn chart_is_empty_without_samples() {
-        let chart = chart(&[], 1_000_000);
-        assert!(chart.empty);
-        assert!(chart.segments.is_empty());
+        let day = chart(&[], 1_000_000, ChartRange::Day);
+        assert!(day.empty);
+        assert!(day.segments.is_empty());
+        assert_eq!(
+            day.caption,
+            "Keine erfolgreichen Checks in den letzten 24 Stunden."
+        );
+
+        let week = chart(&[], 1_000_000, ChartRange::Week);
+        assert_eq!(
+            week.caption,
+            "Keine erfolgreichen Checks in den letzten 7 Tagen."
+        );
+    }
+
+    #[test]
+    fn chart_ranges_round_trip_and_mark_the_active_link() {
+        assert_eq!(ChartRange::default(), ChartRange::Day);
+        for range in ChartRange::ALL {
+            assert_eq!(ChartRange::parse(range.param()), Some(range));
+        }
+        assert_eq!(ChartRange::parse("1h"), None);
+
+        let links = range_links("opac", ChartRange::Week);
+        let values: Vec<&str> = links.iter().map(|link| link.href.as_str()).collect();
+        assert_eq!(
+            values,
+            vec![
+                "/t/opac?range=24h#chart",
+                "/t/opac?range=7d#chart",
+                "/t/opac?range=90d#chart"
+            ]
+        );
+        assert_eq!(
+            links.iter().map(|link| link.label).collect::<Vec<_>>(),
+            vec!["24 h", "7 Tage", "90 Tage"]
+        );
+        assert_eq!(
+            links.iter().map(|link| link.active).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
     }
 }

@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Detail page latency chart switches between 24 hours, 7 days and 90 days;
+  longer windows are bucketed and averaged for a smooth line.
+
 ## [0.1.0]
 
 ### Added

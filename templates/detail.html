@@ -11,7 +11,13 @@
 <p class="windows">{% for window in windows %}{{ window.label }} {{ window.value }}{% if !loop.last %} · {% endif %}{% endfor %}</p>
 {% include "bars.html" %}
 
-<h2>Antwortzeit, 24 Stunden</h2>
+<section id="chart">
+<div class="chart-head">
+  <h2>Antwortzeit</h2>
+  <nav class="chart-ranges" aria-label="Zeitraum">
+    {% for link in range_links %}<a href="{{ link.href }}"{% if link.active %} aria-current="page"{% endif %}>{{ link.label }}</a>{% endfor %}
+  </nav>
+</div>
 {% if chart.empty %}
 <p class="muted">{{ chart.caption }}</p>
 {% else %}
@@ -33,6 +39,7 @@
   <figcaption>{{ chart.caption }}</figcaption>
 </figure>
 {% endif %}
+</section>
 
 <h2>Störungen</h2>
 {% if incidents.is_empty() %}

@@ -4,10 +4,11 @@
 use anyhow::Context;
 use askama_web::WebTemplate;
 use axum::Router;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use serde::Deserialize;
 
 use crate::config::Config;
 use crate::db::{self, Store, TargetState};
@@ -114,11 +115,26 @@ async fn status_partial(State(app): State<App>) -> Result<Response, AppError> {
     Ok(page(views::StatusPartial { targets }))
 }
 
-async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Response, AppError> {
+#[derive(Deserialize)]
+struct DetailQuery {
+    range: Option<String>,
+}
+
+async fn detail(
+    Path(id): Path<String>,
+    Query(query): Query<DetailQuery>,
+    State(app): State<App>,
+) -> Result<Response, AppError> {
     let now = db::unix_now();
     let Some(state) = app.store.target(&id).await? else {
         return Err(AppError::NotFound);
     };
+    let range = query
+        .range
+        .as_deref()
+        .and_then(views::ChartRange::parse)
+        .unwrap_or_default();
+
     let grid = views::day_grid(now);
     let rows = app.store.daily_stats(&state.id, &grid.days[0]).await?;
     let stats = views::day_stats(&rows, &grid);
@@ -126,7 +142,7 @@ async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Respon
     let target = views::card(&state, &stats, &grid, now);
     let windows = views::windows(&stats, views::totals(&last_24h));
 
-    let samples = app.store.latency_since(&id, now - 24 * 3600).await?;
+    let samples = app.store.latency_since(&id, now - range.seconds()).await?;
     let incidents = app
         .store
         .recent_incidents(&id, DETAIL_INCIDENTS)
@@ -138,7 +154,8 @@ async fn detail(Path(id): Path<String>, State(app): State<App>) -> Result<Respon
         target,
         url: state.url,
         windows,
-        chart: views::chart(&samples, now),
+        range_links: views::range_links(&state.id, range),
+        chart: views::chart(&samples, now, range),
         incidents,
     }))
 }
