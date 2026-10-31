@@ -36,6 +36,12 @@
       <span class="chart-y-label" style="top: {{ chart.y_base_pct }}">{{ chart.zero_label }}</span>
     </div>
     <svg class="chart-svg" viewBox="0 0 {{ chart.width }} {{ chart.height }}" role="img" aria-label="{{ chart.alt }}">
+      {% for gap in chart.gaps %}
+      <rect class="no-data" x="{{ gap.x }}" y="{{ chart.y_top }}" width="{{ gap.width }}" height="{{ chart.plot_height }}"></rect>
+      {% endfor %}
+      {% for band in chart.bands %}
+      <rect class="outage" x="{{ band.x }}" y="{{ chart.y_top }}" width="{{ band.width }}" height="{{ chart.plot_height }}"></rect>
+      {% endfor %}
       <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_top }}" y2="{{ chart.y_top }}"></line>
       {% if chart.mid_visible %}
       <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_mid }}" y2="{{ chart.y_mid }}"></line>
@@ -51,7 +57,7 @@
       <text class="axis-label" x="{{ chart.end_anchor_x }}" y="{{ chart.label_time }}" text-anchor="end">{{ chart.end_label }}</text>
     </svg>
   </div>
-  <figcaption>{{ chart.caption }}</figcaption>
+  <figcaption>{{ chart.caption }}{% if !chart.bands.is_empty() %}<span class="chart-key"><span class="chart-key-swatch" aria-hidden="true"></span>Ausfall</span>{% endif %}{% if !chart.gaps.is_empty() %}<span class="chart-key"><span class="chart-key-swatch no-data" aria-hidden="true"></span>keine Daten</span>{% endif %}</figcaption>
 </figure>
 {% endif %}
 </section>

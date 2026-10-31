@@ -10,7 +10,7 @@ use askama::Template;
 use jiff::civil::Date;
 
 use crate::day::{self, at, date_of};
-use crate::db::{CheckSummary, DailyStat, HistoryPoint, IncidentSummary, TargetState};
+use crate::db::{ChartCheck, CheckSummary, DailyStat, HistoryPoint, IncidentSummary, TargetState};
 
 /// Bars on the overview: one per day, including today.
 pub const BAR_DAYS: i64 = 90;
@@ -25,6 +25,14 @@ const CHART_HEIGHT: i64 = 170;
 const PAD_RIGHT: i64 = 8;
 const PAD_TOP: i64 = 18;
 const PAD_BOTTOM: i64 = 34;
+
+/// A failed check that lasted seconds would be sub-pixel in the long windows;
+/// the band still gets this width so the outage stays visible.
+const MIN_BAND_WIDTH: i64 = 2;
+
+/// Only a missing run of two probe intervals counts as a data gap: one late
+/// check is jitter. The gap starts at the first missed interval.
+const GAP_INTERVALS: i64 = 2;
 
 fn date_label(date: Date) -> String {
     format!("{:02}.{:02}.{}", date.day(), date.month(), date.year())
@@ -490,6 +498,12 @@ pub struct Dot {
     pub y: i64,
 }
 
+/// A stretch of the x axis without a usable measurement, drawn as a band.
+pub struct Band {
+    pub x: i64,
+    pub width: i64,
+}
+
 /// Server-rendered latency chart: plain SVG, no JavaScript.
 pub struct Chart {
     pub empty: bool,
@@ -497,6 +511,11 @@ pub struct Chart {
     pub height: i64,
     pub segments: Vec<String>,
     pub dots: Vec<Dot>,
+    pub bands: Vec<Band>,
+    /// Stretches with no check at all, drawn in the neutral gap tone.
+    pub gaps: Vec<Band>,
+    /// Height of the plot area, for a band that spans it.
+    pub plot_height: i64,
     pub alt: String,
     pub caption: String,
     pub max_label: String,
@@ -544,6 +563,78 @@ fn chart_pct(y: i64) -> String {
     format!("{:.3}%", y as f64 * 100.0 / CHART_HEIGHT as f64)
 }
 
+/// Append one band, merging it into the previous one when they touch. The x
+/// limits keep a minimum-width band inside the plot.
+fn push_band(bands: &mut Vec<Band>, from: i64, until: i64, x_of: &impl Fn(i64) -> i64, right: i64) {
+    if until <= from {
+        return;
+    }
+    let x = x_of(from);
+    let width = (x_of(until) - x).max(MIN_BAND_WIDTH);
+    let x = x.min(right - width).max(0);
+    match bands.last_mut() {
+        Some(last) if x <= last.x + last.width => {
+            last.width = (x + width - last.x).max(last.width);
+        }
+        _ => bands.push(Band { x, width }),
+    }
+}
+
+/// Failed checks mark the stretches without a usable measurement. A failure
+/// covers one probe interval at most — the same rule the rollup uses for
+/// `down_seconds` — so a gap between checks never becomes downtime. Bands that
+/// touch are merged into one rectangle.
+fn outage_bands(
+    checks: &[ChartCheck],
+    interval_s: i64,
+    start: i64,
+    now: i64,
+    x_of: &impl Fn(i64) -> i64,
+    right: i64,
+) -> Vec<Band> {
+    let interval = interval_s.max(1);
+    let mut bands: Vec<Band> = Vec::new();
+    for (index, &(ts, ok, _)) in checks.iter().enumerate() {
+        if ok || ts < start || ts > now {
+            continue;
+        }
+        let next = checks
+            .get(index + 1)
+            .map_or(ts + interval, |&(next, ..)| next.min(ts + interval));
+        push_band(&mut bands, ts, next.max(ts + 1).min(now), &x_of, right);
+    }
+    bands
+}
+
+/// Stretches where the prober produced no check at all. The leading edge of
+/// the window stays blank: checks before it are never loaded, so an empty
+/// beginning is the start of monitoring, not a known gap.
+fn data_gaps(
+    checks: &[ChartCheck],
+    interval_s: i64,
+    start: i64,
+    now: i64,
+    x_of: &impl Fn(i64) -> i64,
+    right: i64,
+) -> Vec<Band> {
+    let interval = interval_s.max(1);
+    let mut gaps: Vec<Band> = Vec::new();
+    let mut previous: Option<i64> = None;
+    for &(ts, _, _) in checks {
+        if ts < start || ts > now {
+            continue;
+        }
+        if let Some(prev) = previous.filter(|&prev| ts - prev > interval * GAP_INTERVALS) {
+            push_band(&mut gaps, prev + interval, ts, &x_of, right);
+        }
+        previous = Some(ts);
+    }
+    if let Some(last) = previous.filter(|&last| now - last > interval * GAP_INTERVALS) {
+        push_band(&mut gaps, last + interval, now, &x_of, right);
+    }
+    gaps
+}
+
 /// Axis stamps: time of day in the short window, dates in the long ones.
 fn chart_stamp(range: ChartRange, ts: i64) -> String {
     match range {
@@ -552,13 +643,20 @@ fn chart_stamp(range: ChartRange, ts: i64) -> String {
     }
 }
 
-pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
+pub fn chart(checks: &[ChartCheck], interval_s: i64, now: i64, range: ChartRange) -> Chart {
     let window = range.seconds();
     let start = now - window;
-    let samples: Vec<(i64, i64)> = samples
+    // Only a successful check produced an answer time worth plotting. A failed
+    // check is an outage marker even when the probe still measured a latency.
+    let samples: Vec<(i64, i64)> = checks
         .iter()
-        .copied()
-        .filter(|&(ts, _)| ts >= start && ts <= now)
+        .filter_map(|&(ts, ok, latency)| {
+            if ok && ts >= start && ts <= now {
+                latency.map(|ms| (ts, ms))
+            } else {
+                None
+            }
+        })
         .collect();
 
     let base = CHART_HEIGHT - PAD_BOTTOM;
@@ -566,14 +664,21 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
     // The y labels live outside the SVG, so the plot fills its full width.
     let left = 0;
     let right = CHART_WIDTH - PAD_RIGHT;
+    let span = window.max(1);
+    let x_of = |ts: i64| left + (ts - start) * (right - left) / span;
+    let bands = outage_bands(checks, interval_s, start, now, &x_of, right);
+    let gaps = data_gaps(checks, interval_s, start, now, &x_of, right);
 
-    if samples.is_empty() {
+    if samples.is_empty() && bands.is_empty() {
         return Chart {
             empty: true,
             width: CHART_WIDTH,
             height: CHART_HEIGHT,
             segments: Vec::new(),
             dots: Vec::new(),
+            bands: Vec::new(),
+            gaps: Vec::new(),
+            plot_height: base - top,
             alt: "Keine Messwerte".to_string(),
             caption: format!(
                 "Keine erfolgreichen Checks in den letzten {}.",
@@ -598,11 +703,48 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
         };
     }
 
+    // A window without a single success still draws the outages; there is no
+    // latency scale to label, so the axis stays blank.
+    if samples.is_empty() {
+        return Chart {
+            empty: false,
+            width: CHART_WIDTH,
+            height: CHART_HEIGHT,
+            segments: Vec::new(),
+            dots: Vec::new(),
+            bands,
+            gaps,
+            plot_height: base - top,
+            alt: format!(
+                "Keine Antwortzeiten in den letzten {}; Ausfälle markiert",
+                range.alt_period()
+            ),
+            caption: format!(
+                "Keine erfolgreichen Checks in den letzten {}.",
+                range.caption_period()
+            ),
+            max_label: String::new(),
+            mid_label: String::new(),
+            mid_visible: false,
+            zero_label: String::new(),
+            start_label: chart_stamp(range, start),
+            end_label: chart_stamp(range, now),
+            y_top: top,
+            y_mid: (top + base) / 2,
+            y_base: base,
+            x_left: left,
+            x_right: right,
+            y_top_pct: chart_pct(top),
+            y_mid_pct: chart_pct((top + base) / 2),
+            y_base_pct: chart_pct(base),
+            label_time: CHART_HEIGHT - 4,
+            end_anchor_x: right,
+        };
+    }
+
     let highest = samples.iter().map(|&(_, ms)| ms).max().unwrap_or(0);
     let scale = nice_max(highest);
-    let span = window.max(1);
     let bucket_span = (span + CHART_BUCKETS - 1) / CHART_BUCKETS;
-    let x_of = |ts: i64| left + (ts - start) * (right - left) / span;
     let y_of = |ms: i64| base - ms * (base - top) / scale;
     // A midpoint tick only makes sense on an even scale; the nice values are
     // even from 2 ms upward.
@@ -666,6 +808,9 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
         height: CHART_HEIGHT,
         segments,
         dots,
+        bands,
+        gaps,
+        plot_height: base - top,
         alt: format!(
             "Antwortzeiten der letzten {} zwischen {} und {}",
             range.alt_period(),
@@ -785,6 +930,14 @@ mod tests {
             .expect("Berlin time")
             .timestamp()
             .as_second()
+    }
+
+    /// Successful chart checks with a measured latency, for the chart tests.
+    fn measured(samples: &[(i64, i64)]) -> Vec<ChartCheck> {
+        samples
+            .iter()
+            .map(|&(ts, ms)| (ts, true, Some(ms)))
+            .collect()
     }
 
     fn stat(checks: u32, ok: u32, down_seconds: i64) -> DayStat {
@@ -1015,7 +1168,7 @@ mod tests {
         let now = 1_000_000;
         // Two samples far apart: one point per segment, both drawn as dots.
         let samples = vec![(now - 24 * 3600, 100), (now, 200)];
-        let chart = chart(&samples, now, ChartRange::Day);
+        let chart = chart(&measured(&samples), 300, now, ChartRange::Day);
         assert!(!chart.empty);
         assert_eq!(chart.segments.len(), 2);
         assert_eq!(chart.dots.len(), 2);
@@ -1037,13 +1190,13 @@ mod tests {
     #[test]
     fn chart_axis_uses_seconds_and_adds_the_half_tick() {
         let now = 1_000_000;
-        let slow = chart(&[(now - 10, 10_000)], now, ChartRange::Day);
+        let slow = chart(&measured(&[(now - 10, 10_000)]), 300, now, ChartRange::Day);
         assert_eq!(slow.max_label, "10 s");
         assert_eq!(slow.mid_label, "5 s");
         assert!(slow.mid_visible);
         assert_eq!(slow.zero_label, "0");
 
-        let fractional = chart(&[(now - 10, 2_500)], now, ChartRange::Day);
+        let fractional = chart(&measured(&[(now - 10, 2_500)]), 300, now, ChartRange::Day);
         assert_eq!(fractional.max_label, "5 s");
         assert_eq!(fractional.mid_label, "2500 ms");
     }
@@ -1063,7 +1216,7 @@ mod tests {
         let samples: Vec<(i64, i64)> = (0..10)
             .map(|index| (now - 3600 + index * 300, 120 + index))
             .collect();
-        let chart = chart(&samples, now, ChartRange::Day);
+        let chart = chart(&measured(&samples), 300, now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 1);
         // Buckets average neighboring samples, so the line gets fewer points
         // than the raw checks but stays one continuous segment.
@@ -1075,7 +1228,12 @@ mod tests {
     fn chart_averages_samples_inside_a_bucket() {
         let now = 1_000_000;
         // Both samples land in the last bucket of the 24 h window.
-        let chart = chart(&[(now - 100, 100), (now - 50, 200)], now, ChartRange::Day);
+        let chart = chart(
+            &measured(&[(now - 100, 100), (now - 50, 200)]),
+            300,
+            now,
+            ChartRange::Day,
+        );
         assert_eq!(chart.dots.len(), 1);
         assert_eq!(chart.max_label, "200 ms");
         let span = chart.y_base - chart.y_top;
@@ -1097,15 +1255,15 @@ mod tests {
 
         // The sample eight days back is outside the week, but both samples
         // are inside the quarter.
-        let week = chart(&samples, now, ChartRange::Week);
+        let week = chart(&measured(&samples), 300, now, ChartRange::Week);
         assert_eq!(points(&week), 1);
         assert!(!week.start_label.contains(':'));
 
-        let day = chart(&samples, now, ChartRange::Day);
+        let day = chart(&measured(&samples), 300, now, ChartRange::Day);
         assert_eq!(points(&day), 1);
         assert!(day.start_label.contains(':'));
 
-        let quarter = chart(&samples, now, ChartRange::Quarter);
+        let quarter = chart(&measured(&samples), 300, now, ChartRange::Quarter);
         assert_eq!(points(&quarter), 2);
         assert!(!quarter.start_label.contains(':'));
     }
@@ -1119,29 +1277,165 @@ mod tests {
             (now - 60, 140),
             (now, 150),
         ];
-        let chart = chart(&samples, now, ChartRange::Day);
+        let chart = chart(&measured(&samples), 300, now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 2);
     }
 
     #[test]
     fn chart_marks_a_single_sample_with_a_dot() {
         let now = 1_000_000;
-        let chart = chart(&[(now - 10, 120)], now, ChartRange::Day);
+        let chart = chart(&measured(&[(now - 10, 120)]), 300, now, ChartRange::Day);
         assert_eq!(chart.segments.len(), 1);
         assert_eq!(chart.dots.len(), 1);
     }
 
     #[test]
-    fn chart_is_empty_without_samples() {
-        let day = chart(&[], 1_000_000, ChartRange::Day);
+    fn chart_marks_failed_checks_as_outages() {
+        let now = 1_000_000;
+        let checks = vec![
+            (now - 5000, true, Some(100)),
+            (now - 4000, false, None),
+            // Recovery 300 s after the failure, inside the interval cap.
+            (now - 3700, true, Some(120)),
+        ];
+        let chart = chart(&checks, 300, now, ChartRange::Day);
+        assert_eq!(chart.bands.len(), 1);
+        let band = &chart.bands[0];
+        assert!(band.x >= chart.x_left);
+        assert!(band.x + band.width <= chart.x_right);
+        // The failed check is not a latency sample.
+        let points: usize = chart
+            .segments
+            .iter()
+            .map(|segment| segment.split(' ').count())
+            .sum();
+        assert_eq!(points, 2);
+    }
+
+    #[test]
+    fn chart_caps_failures_at_one_interval_and_merges_the_run() {
+        let now = 1_000_000;
+        let checks = vec![
+            (now - 5000, false, None),
+            (now - 4700, false, None),
+            (now - 4400, false, None),
+            // A long gap to the next success must not turn into downtime.
+            (now - 600, true, Some(100)),
+        ];
+        let chart = chart(&checks, 300, now, ChartRange::Day);
+        assert_eq!(chart.bands.len(), 1);
+        // Three intervals are 900 s; the plot is 712 px wide over 24 h, so
+        // the band stays below ten pixels instead of stretching to recovery.
+        assert!(chart.bands[0].width > MIN_BAND_WIDTH);
+        assert!(chart.bands[0].width < 10);
+    }
+
+    #[test]
+    fn chart_draws_outages_even_without_a_successful_check() {
+        let now = 1_000_000;
+        let checks = vec![
+            // A status failure still carries a latency; it is an outage, not
+            // an answer time.
+            (now - 1000, false, Some(500)),
+            (now - 700, false, None),
+        ];
+        let chart = chart(&checks, 300, now, ChartRange::Day);
+        assert!(!chart.empty);
+        assert!(chart.segments.is_empty());
+        assert!(chart.dots.is_empty());
+        assert_eq!(chart.bands.len(), 1);
+        assert!(chart.max_label.is_empty());
+        assert!(!chart.mid_visible);
+        assert_eq!(
+            chart.caption,
+            "Keine erfolgreichen Checks in den letzten 24 Stunden."
+        );
+    }
+
+    #[test]
+    fn chart_clamps_an_ongoing_outage_to_now() {
+        let now = 1_000_000;
+        let chart = chart(&[(now - 30, false, None)], 300, now, ChartRange::Day);
+        assert_eq!(chart.bands.len(), 1);
+        let band = &chart.bands[0];
+        assert!(band.width >= MIN_BAND_WIDTH);
+        assert_eq!(band.x + band.width, chart.x_right);
+    }
+
+    #[test]
+    fn chart_marks_long_missing_runs_as_data_gaps() {
+        let now = 1_000_000;
+        let checks = vec![
+            (now - 1000, true, Some(100)),
+            // No check for 700 s: more than the two intervals of jitter.
+            (now - 300, true, Some(110)),
+            (now, true, Some(120)),
+        ];
+        let marked = chart(&checks, 300, now, ChartRange::Day);
+        assert_eq!(marked.gaps.len(), 1);
+        let gap = &marked.gaps[0];
+        assert!(gap.x > marked.x_left);
+        assert!(gap.x + gap.width < marked.x_right);
+
+        // One late check is jitter, not a gap.
+        let jitter = vec![
+            (now - 1000, true, Some(100)),
+            (now - 500, true, Some(110)),
+            (now, true, Some(120)),
+        ];
+        assert!(chart(&jitter, 300, now, ChartRange::Day).gaps.is_empty());
+    }
+
+    #[test]
+    fn chart_keeps_trailing_gaps_but_not_the_leading_edge() {
+        let now = 1_000_000;
+        let checks = vec![
+            (now - 1000, true, Some(100)),
+            (now - 300, true, Some(110)),
+            (now, true, Some(120)),
+        ];
+        let leading = chart(&checks, 300, now, ChartRange::Day);
+        // The 1,000 s before the first check cannot be judged without a
+        // check before the window, so it stays blank.
+        assert_eq!(leading.gaps.len(), 1);
+        assert!(leading.gaps[0].x > leading.x_left);
+
+        let trailing = chart(&[(now - 5_000, true, Some(100))], 300, now, ChartRange::Day);
+        assert_eq!(trailing.gaps.len(), 1);
+        let gap = &trailing.gaps[0];
+        assert_eq!(gap.x + gap.width, leading.x_right);
+    }
+
+    #[test]
+    fn chart_puts_the_data_gap_after_the_confirmed_outage() {
+        let now = 1_000_000;
+        let checks = vec![
+            (now - 1000, false, None),
+            // Recovery after a long prober gap: red ends at the interval cap,
+            // the unobserved rest is the neutral gap.
+            (now - 300, true, Some(100)),
+            (now, true, Some(120)),
+        ];
+        let chart = chart(&checks, 300, now, ChartRange::Day);
+        assert_eq!(chart.bands.len(), 1);
+        assert_eq!(chart.gaps.len(), 1);
+        let band = &chart.bands[0];
+        let gap = &chart.gaps[0];
+        assert!(gap.x >= band.x + band.width);
+    }
+
+    #[test]
+    fn chart_is_empty_without_checks() {
+        let day = chart(&[], 300, 1_000_000, ChartRange::Day);
         assert!(day.empty);
         assert!(day.segments.is_empty());
+        assert!(day.bands.is_empty());
         assert_eq!(
             day.caption,
             "Keine erfolgreichen Checks in den letzten 24 Stunden."
         );
 
-        let week = chart(&[], 1_000_000, ChartRange::Week);
+        let week = chart(&[], 300, 1_000_000, ChartRange::Week);
         assert_eq!(
             week.caption,
             "Keine erfolgreichen Checks in den letzten 7 Tagen."

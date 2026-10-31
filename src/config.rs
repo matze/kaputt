@@ -100,7 +100,8 @@ impl TargetConfig {
         if !matches!(url.scheme(), "http" | "https") {
             return Err(format!(
                 "target {:?}: url scheme {:?} is not http or https",
-                self.id, url.scheme()
+                self.id,
+                url.scheme()
             ));
         }
         if url.host_str().is_none() {
@@ -119,10 +120,7 @@ impl TargetConfig {
             return Err(format!("target {:?}: timeout_s must be > 0", self.id));
         }
         if self.fail_threshold == 0 || self.ok_threshold == 0 {
-            return Err(format!(
-                "target {:?}: thresholds must be > 0",
-                self.id
-            ));
+            return Err(format!("target {:?}: thresholds must be > 0", self.id));
         }
         Ok(())
     }
@@ -249,21 +247,25 @@ mod tests {
 
     #[test]
     fn bad_urls_are_rejected() {
-        let err = parse(r#"
+        let err = parse(
+            r#"
             [[targets]]
             id = "x"
             name = "X"
             url = "ftp://example.org/"
-        "#)
+        "#,
+        )
         .expect_err("ftp must fail");
         assert!(err.contains("not http or https"), "{err}");
 
-        let err = parse(r#"
+        let err = parse(
+            r#"
             [[targets]]
             id = "x"
             name = "X"
             url = "not a url"
-        "#)
+        "#,
+        )
         .expect_err("garbage must fail");
         assert!(err.contains("url"), "{err}");
     }
@@ -273,12 +275,14 @@ mod tests {
         let err = parse("listen = \"localhost\"\n").expect_err("listen must be a socket address");
         assert!(err.contains("listen"), "{err}");
 
-        let err = parse(r#"
+        let err = parse(
+            r#"
             [[targets]]
             id = "hat space"
             name = "X"
             url = "https://example.org/"
-        "#)
+        "#,
+        )
         .expect_err("id charset must be enforced");
         assert!(err.contains("target id"), "{err}");
     }

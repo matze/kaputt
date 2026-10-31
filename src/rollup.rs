@@ -41,7 +41,11 @@ pub struct Report {
 /// `checks` are the stored checks of `date` in time order, `(ts, ok,
 /// latency_ms)`; anything outside `date` is ignored. Latency is averaged over
 /// the successful checks only: a timeout is not a response time.
-pub fn day_stat(date: impl Into<jiff::civil::Date>, checks: &[(i64, bool, Option<i64>)], interval_s: i64) -> DailyStat {
+pub fn day_stat(
+    date: impl Into<jiff::civil::Date>,
+    checks: &[(i64, bool, Option<i64>)],
+    interval_s: i64,
+) -> DailyStat {
     let (start, end) = day::bounds(date.into());
     let interval = interval_s.max(1);
     let mut stat = DailyStat {
@@ -120,7 +124,9 @@ pub async fn pass(store: &Store, now: i64) -> anyhow::Result<Report> {
 
     // Only after every day that still has raw checks was rolled up may the old
     // checks go: they are the input of the rollup they belong to.
-    report.pruned_checks = store.prune_checks(now - RAW_RETENTION_DAYS * 86_400).await?;
+    report.pruned_checks = store
+        .prune_checks(now - RAW_RETENTION_DAYS * 86_400)
+        .await?;
     let stats_before = day::key(day::shift_years(today, STATS_RETENTION_YEARS));
     report.pruned_days = store.prune_daily_stats(&stats_before).await?;
     Ok(report)
@@ -254,7 +260,9 @@ mod tests {
         .await;
         assert_eq!(count, 288);
 
-        let report = pass(&fixture.store, day::bounds(day).1).await.expect("pass");
+        let report = pass(&fixture.store, day::bounds(day).1)
+            .await
+            .expect("pass");
         assert_eq!(report.days, 1);
 
         let rows = fixture
@@ -288,7 +296,9 @@ mod tests {
         assert_eq!(short_checks, 276);
 
         // Every check fails on the short day: the whole 23 hours are downtime.
-        pass(&fixture.store, day::bounds(long).1).await.expect("pass");
+        pass(&fixture.store, day::bounds(long).1)
+            .await
+            .expect("pass");
         let rows = fixture
             .store
             .daily_stats("opac", "2026-03-29")
@@ -329,7 +339,9 @@ mod tests {
                 .await
                 .expect("insert");
         }
-        pass(&fixture.store, start + 3600).await.expect("first pass");
+        pass(&fixture.store, start + 3600)
+            .await
+            .expect("first pass");
         for index in 10..20 {
             fixture
                 .store
@@ -337,7 +349,9 @@ mod tests {
                 .await
                 .expect("insert");
         }
-        pass(&fixture.store, start + 7200).await.expect("second pass");
+        pass(&fixture.store, start + 7200)
+            .await
+            .expect("second pass");
 
         let rows = fixture
             .store

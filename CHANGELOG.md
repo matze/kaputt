@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- The detail latency chart marks failed checks as red outage bands and
+  stretches without any check as neutral gray "keine Daten" bands, so an
+  outage stays distinct from a prober gap. A failure covers at most one probe
+  interval, matching the uptime rollups.
+
 ## [0.2.0]
 
 ### Added

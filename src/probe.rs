@@ -166,7 +166,11 @@ fn classify(err: &reqwest::Error) -> (ErrorKind, String) {
     (kind, joined)
 }
 
-const DNS_MARKERS: &[&str] = &["dns error", "failed to lookup address", "name or service not known"];
+const DNS_MARKERS: &[&str] = &[
+    "dns error",
+    "failed to lookup address",
+    "name or service not known",
+];
 const TLS_MARKERS: &[&str] = &[
     "tls",
     "ssl",
@@ -329,7 +333,9 @@ mod tests {
     async fn refused_connections_are_classified_as_connect() {
         let prober = Prober::new().expect("prober");
         // Port 1 on loopback has no listener in any sane environment.
-        let outcome = prober.probe(&target("http://127.0.0.1:1/".into(), 200)).await;
+        let outcome = prober
+            .probe(&target("http://127.0.0.1:1/".into(), 200))
+            .await;
         assert!(!outcome.ok);
         assert_eq!(outcome.error_kind, Some(ErrorKind::Connect));
     }
@@ -337,11 +343,15 @@ mod tests {
     #[test]
     fn dns_failures_are_recognised() {
         assert_eq!(
-            classify_connect("dns error: failed to lookup address information: Name or service not known"),
+            classify_connect(
+                "dns error: failed to lookup address information: Name or service not known"
+            ),
             ErrorKind::Dns
         );
         assert_eq!(
-            classify_connect("failed to lookup address information: temporary failure in name resolution"),
+            classify_connect(
+                "failed to lookup address information: temporary failure in name resolution"
+            ),
             ErrorKind::Dns
         );
     }

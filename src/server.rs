@@ -142,7 +142,7 @@ async fn detail(
     let target = views::card(&state, &stats, &grid, now);
     let windows = views::windows(&stats, views::totals(&last_24h));
 
-    let samples = app.store.latency_since(&id, now - range.seconds()).await?;
+    let checks = app.store.chart_since(&id, now - range.seconds()).await?;
     let incidents = app
         .store
         .recent_incidents(&id, DETAIL_INCIDENTS)
@@ -150,12 +150,13 @@ async fn detail(
         .iter()
         .map(|incident| views::incident_view(incident, now))
         .collect();
+    let interval_s = i64::from(state.interval_s);
     Ok(page(views::DetailPage {
         target,
         url: state.url,
         windows,
         range_links: views::range_links(&state.id, range),
-        chart: views::chart(&samples, now, range),
+        chart: views::chart(&checks, interval_s, now, range),
         incidents,
     }))
 }

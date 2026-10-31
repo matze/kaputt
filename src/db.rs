@@ -370,6 +370,11 @@ pub struct TargetState {
 /// `ok` flag and timestamps of the checks since `since`, oldest first.
 pub type HistoryPoint = (i64, bool);
 
+/// One check in a chart window, oldest first: timestamp, success flag and the
+/// latency when the probe measured one. A failed status check has a latency
+/// but no usable answer time, so the chart marks it instead of plotting it.
+pub type ChartCheck = (i64, bool, Option<i64>);
+
 /// One `daily_stats` row: a local day of one target, as the rollup stores it.
 /// `day` is the `YYYY-MM-DD` key from [`crate::day::key`], so text order is
 /// day order.
@@ -485,23 +490,26 @@ impl Store {
             .map_err(Into::into)
     }
 
-    /// Latency of the successful checks from `since` on, oldest first.
-    pub async fn latency_since(
+    /// Every check of one target from `since` on, oldest first, for the chart.
+    pub async fn chart_since(
         &self,
         target_id: &str,
         since: i64,
-    ) -> anyhow::Result<Vec<(i64, i64)>> {
+    ) -> anyhow::Result<Vec<ChartCheck>> {
         let target_id = target_id.to_string();
         self.conn
             .call(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT ts, latency_ms FROM checks
-                     WHERE target_id = ?1 AND ts >= ?2 AND ok = 1 AND latency_ms IS NOT NULL
-                     ORDER BY ts, id",
+                    "SELECT ts, ok, latency_ms FROM checks
+                     WHERE target_id = ?1 AND ts >= ?2 ORDER BY ts, id",
                 )?;
                 let rows = stmt
                     .query_map(rusqlite::params![target_id, since], |row| {
-                        Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)? != 0,
+                            row.get::<_, Option<i64>>(2)?,
+                        ))
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, rusqlite::Error>(rows)
@@ -661,7 +669,11 @@ impl Store {
     }
 
     /// Rollups of one target from `from_day` on, oldest first.
-    pub async fn daily_stats(&self, target_id: &str, from_day: &str) -> anyhow::Result<Vec<DailyStat>> {
+    pub async fn daily_stats(
+        &self,
+        target_id: &str,
+        from_day: &str,
+    ) -> anyhow::Result<Vec<DailyStat>> {
         let target_id = target_id.to_string();
         let from_day = from_day.to_string();
         self.conn
@@ -704,7 +716,8 @@ impl Store {
         let before_day = before_day.to_string();
         self.conn
             .call(move |conn| {
-                let deleted = conn.execute("DELETE FROM daily_stats WHERE day < ?1", [before_day])?;
+                let deleted =
+                    conn.execute("DELETE FROM daily_stats WHERE day < ?1", [before_day])?;
                 Ok::<usize, rusqlite::Error>(deleted)
             })
             .await
@@ -917,6 +930,34 @@ mod tests {
                 Some("timeout".to_string()),
                 Some("operation timed out".to_string())
             )
+        );
+    }
+
+    #[tokio::test]
+    async fn chart_since_returns_every_check_with_its_latency() {
+        let (_dir, _path, store) = open_temp().await;
+        store
+            .upsert_targets(&[target("opac", "OPAC")])
+            .await
+            .expect("upsert");
+        store
+            .insert_check("opac", 1000, &success())
+            .await
+            .expect("insert");
+        store
+            .insert_check("opac", 1300, &failure())
+            .await
+            .expect("insert");
+        store
+            .insert_check("opac", 1600, &success())
+            .await
+            .expect("insert");
+
+        // A failed check keeps the latency the probe measured; the chart
+        // treats it as an outage, not as a sample.
+        assert_eq!(
+            store.chart_since("opac", 1300).await.expect("chart"),
+            vec![(1300, false, Some(10_000)), (1600, true, Some(123))]
         );
     }
 
