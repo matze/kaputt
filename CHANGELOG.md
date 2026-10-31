@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.3.0]
+
 ### Added
 
 - The detail latency chart marks failed checks as red outage bands and
