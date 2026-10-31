@@ -12,8 +12,8 @@ and this project adheres to
 
 - Detail page latency chart switches between 24 hours, 7 days and 90 days;
   longer windows are bucketed and averaged for a smooth line. Axis labels use
-  seconds for whole seconds, stay integer milliseconds otherwise and show a
-  midpoint tick.
+  seconds for whole seconds, stay integer milliseconds otherwise, show a
+  midpoint tick and stay visible on phones.
 
 ## [0.1.0]
 

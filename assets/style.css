@@ -209,6 +209,31 @@ h2 {
 }
 
 .chart { margin: 0; }
+.chart-body {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 8px;
+  font-size: 11px;
+}
+.chart-y {
+  position: relative;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+/* Invisible sizers give the column the width of the actual labels, not a
+   worst-case string like "2500 ms" that the current data never produces. */
+.chart-y-size {
+  display: block;
+  height: 0;
+  overflow: hidden;
+  visibility: hidden;
+}
+.chart-y-label {
+  position: absolute;
+  right: 0;
+  transform: translateY(-50%);
+}
 .chart-svg { display: block; width: 100%; height: auto; }
 .chart figcaption { margin-top: 4px; font-size: 12.5px; color: var(--muted); }
 
@@ -242,7 +267,6 @@ h2 {
 }
 .latency-dot { fill: var(--up); }
 .axis-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.y-label { dominant-baseline: middle; }
 
 .rows {
   width: 100%;
@@ -317,7 +341,9 @@ h2 {
   .rows td:nth-child(2) { grid-area: span; }
   .rows td:nth-child(3) { grid-area: cause; }
   .rows tr:last-child { border-bottom: none; }
-  .axis-label { display: none; }
+  /* The SVG shrinks with the page; enlarge the labels in user units so they
+     stay readable. The y labels are HTML and keep their 11px size. */
+  .axis-label { font-size: 28px; }
 }
 
 .rows .result.bad { color: var(--down); }

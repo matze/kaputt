@@ -22,9 +22,6 @@ const CHART_BUCKETS: i64 = 240;
 
 const CHART_WIDTH: i64 = 720;
 const CHART_HEIGHT: i64 = 170;
-/// Gutter for the y labels. The labels grow at the mobile breakpoint, so the
-/// gutter has to fit their SVG font size rather than the desktop default.
-const PAD_LEFT: i64 = 84;
 const PAD_RIGHT: i64 = 8;
 const PAD_TOP: i64 = 18;
 const PAD_BOTTOM: i64 = 34;
@@ -513,9 +510,10 @@ pub struct Chart {
     pub y_base: i64,
     pub x_left: i64,
     pub x_right: i64,
-    pub label_top: i64,
-    pub label_mid: i64,
-    pub label_base: i64,
+    /// Vertical positions for the HTML y labels, as CSS percentages.
+    pub y_top_pct: String,
+    pub y_mid_pct: String,
+    pub y_base_pct: String,
     pub label_time: i64,
     pub end_anchor_x: i64,
 }
@@ -542,6 +540,10 @@ struct Bucket {
     count: i64,
 }
 
+fn chart_pct(y: i64) -> String {
+    format!("{:.3}%", y as f64 * 100.0 / CHART_HEIGHT as f64)
+}
+
 /// Axis stamps: time of day in the short window, dates in the long ones.
 fn chart_stamp(range: ChartRange, ts: i64) -> String {
     match range {
@@ -561,7 +563,8 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
 
     let base = CHART_HEIGHT - PAD_BOTTOM;
     let top = PAD_TOP;
-    let left = PAD_LEFT;
+    // The y labels live outside the SVG, so the plot fills its full width.
+    let left = 0;
     let right = CHART_WIDTH - PAD_RIGHT;
 
     if samples.is_empty() {
@@ -587,9 +590,9 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
             y_base: base,
             x_left: left,
             x_right: right,
-            label_top: top,
-            label_mid: (top + base) / 2,
-            label_base: base,
+            y_top_pct: chart_pct(top),
+            y_mid_pct: chart_pct((top + base) / 2),
+            y_base_pct: chart_pct(base),
             label_time: CHART_HEIGHT - 4,
             end_anchor_x: right,
         };
@@ -690,9 +693,9 @@ pub fn chart(samples: &[(i64, i64)], now: i64, range: ChartRange) -> Chart {
         y_base: base,
         x_left: left,
         x_right: right,
-        label_top: top,
-        label_mid: y_mid,
-        label_base: base,
+        y_top_pct: chart_pct(top),
+        y_mid_pct: chart_pct(y_mid),
+        y_base_pct: chart_pct(base),
         label_time: CHART_HEIGHT - 4,
         end_anchor_x: right,
     }
@@ -1021,6 +1024,9 @@ mod tests {
         assert!(chart.mid_visible);
         let scale = 200;
         let span = chart.y_base - chart.y_top;
+        assert_eq!(chart.y_top_pct, "10.588%");
+        assert_eq!(chart.y_mid_pct, "45.294%");
+        assert_eq!(chart.y_base_pct, "80.000%");
         assert_eq!(chart.dots[0].x, chart.x_left);
         assert_eq!(chart.dots[0].y, chart.y_base - 100 * span / scale);
         assert_eq!(chart.dots[1].x, chart.x_right);
