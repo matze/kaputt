@@ -12,4 +12,4 @@ and this project adheres to
 
 ### Added
 
-- Status page for Karlsruhe city sites.
+- Status page for Karlsruhe city sites on <https://kaputt.matze.lol>.
