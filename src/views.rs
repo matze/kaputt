@@ -21,7 +21,9 @@ pub const BAR_DAYS: i64 = 90;
 const CHART_BUCKETS: i64 = 240;
 
 const CHART_WIDTH: i64 = 720;
-const CHART_HEIGHT: i64 = 170;
+/// Tall enough that a phone, where the SVG scales to the viewport width,
+/// still gets a readable plot instead of a squashed strip.
+const CHART_HEIGHT: i64 = 240;
 const PAD_RIGHT: i64 = 8;
 const PAD_TOP: i64 = 18;
 const PAD_BOTTOM: i64 = 34;
@@ -1173,9 +1175,9 @@ mod tests {
         assert!(chart.mid_visible);
         let scale = 200;
         let span = chart.y_base - chart.y_top;
-        assert_eq!(chart.y_top_pct, "10.588%");
-        assert_eq!(chart.y_mid_pct, "45.294%");
-        assert_eq!(chart.y_base_pct, "80.000%");
+        assert_eq!(chart.y_top_pct, "7.500%");
+        assert_eq!(chart.y_mid_pct, "46.667%");
+        assert_eq!(chart.y_base_pct, "85.833%");
         assert_eq!(chart.dots[0].x, chart.x_left);
         assert_eq!(chart.dots[0].y, chart.y_base - 100 * span / scale);
         assert_eq!(chart.dots[1].x, chart.x_right);
