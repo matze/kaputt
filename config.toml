@@ -1,8 +1,8 @@
-# kaputt.matze.lol — configuration.
+# kaputt.matze.lol production configuration.
 #
-# Targets are the only knobs: they are upserted into the database at startup,
-# so editing this file and restarting the service is the whole target
-# management. Removing a target disables it but keeps its history.
+# Targets are upserted into the database at startup, so edit this file and rerun
+# the server for any new target. management. Removing a target disables it but
+# keeps its history.
 
 listen = "127.0.0.1:8080"
 database = "kaputt.db"
@@ -54,3 +54,15 @@ fail_threshold = 2
 ok_threshold = 2
 enabled = true
 sort = 40
+
+[[targets]]
+id = "kitaportal"
+name = "Kita-Portal"
+url = "https://kitaportal.karlsruhe.de/"
+expect_status = 200
+interval_s = 300
+timeout_s = 10
+fail_threshold = 2
+ok_threshold = 2
+enabled = true
+sort = 50
