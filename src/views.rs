@@ -128,17 +128,15 @@ pub fn duration(seconds: i64) -> String {
     }
 }
 
-/// Thousands separated with dots, as German numbers are written.
-pub fn num_de(n: i64) -> String {
-    let digits = n.abs().to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3 + 1);
-    for (index, digit) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
-            out.push('.');
-        }
-        out.push(digit);
+/// Answer times read in whole milliseconds below a second, then in seconds
+/// with one decimal: "2,3 s" instead of "2.250 ms". No thousands separator,
+/// so long values stay short.
+fn latency_text(ms: i64) -> String {
+    if ms < 1000 {
+        return format!("{} ms", ms.max(0));
     }
-    if n < 0 { format!("-{out}") } else { out }
+    let tenths = (ms + 50) / 100;
+    format!("{},{} s", tenths / 10, tenths % 10)
 }
 
 /// "99 %", "100 %", or an em dash when nothing was measured. Rounded down, so
@@ -192,20 +190,17 @@ fn error_note(kind: &str, detail: Option<&str>) -> String {
 }
 
 fn latency(ms: Option<i64>) -> String {
-    match ms {
-        Some(ms) => format!("{} ms", num_de(ms)),
-        None => "—".to_string(),
-    }
+    ms.map_or_else(|| "—".to_string(), latency_text)
 }
 
-/// Axis labels use whole seconds only, so a slow target reads "10 s" instead
-/// of "10.000 ms". Everything else stays an integer number of milliseconds;
-/// there are no fractional seconds to read.
+/// Axis ticks drop a zero decimal, so whole seconds read "10 s" and "5 s";
+/// fractional ticks keep their digit ("2,5 s").
 fn axis_latency(ms: i64) -> String {
-    if ms >= 1000 && ms % 1000 == 0 {
-        format!("{} s", ms / 1000)
+    let text = latency_text(ms);
+    if text.ends_with(",0 s") {
+        format!("{} s", &text[..text.len() - 4])
     } else {
-        format!("{ms} ms")
+        text
     }
 }
 
@@ -369,7 +364,7 @@ pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) ->
             let mut title = format!(
                 "{day}: {} ({} Checks",
                 percent(stat.ok, stat.checks),
-                num_de(i64::from(stat.checks))
+                stat.checks
             );
             if stat.down_seconds > 0 {
                 title.push_str(&format!(", {} kaputt", span_short(stat.down_seconds)));
@@ -818,8 +813,7 @@ pub fn chart(checks: &[ChartCheck], interval_s: i64, now: i64, range: ChartRange
             latency(Some(highest))
         ),
         caption: format!(
-            "{} Messungen, Median = {}, Max = {}",
-            num_de(samples.len() as i64),
+            "Median = {}, Max = {}",
             latency(Some(median)),
             latency(Some(highest))
         ),
@@ -959,12 +953,14 @@ mod tests {
     }
 
     #[test]
-    fn numbers_use_dots_as_thousands_separator() {
-        assert_eq!(num_de(0), "0");
-        assert_eq!(num_de(999), "999");
-        assert_eq!(num_de(1000), "1.000");
-        assert_eq!(num_de(25_920), "25.920");
-        assert_eq!(num_de(-4321), "-4.321");
+    fn answer_times_switch_to_seconds_with_one_decimal() {
+        assert_eq!(latency(None), "—");
+        assert_eq!(latency(Some(0)), "0 ms");
+        assert_eq!(latency(Some(999)), "999 ms");
+        assert_eq!(latency(Some(1_000)), "1,0 s");
+        assert_eq!(latency(Some(1_400)), "1,4 s");
+        assert_eq!(latency(Some(2_250)), "2,3 s");
+        assert_eq!(latency(Some(25_920)), "25,9 s");
     }
 
     #[test]
@@ -1198,15 +1194,16 @@ mod tests {
 
         let fractional = chart(&measured(&[(now - 10, 2_500)]), 300, now, ChartRange::Day);
         assert_eq!(fractional.max_label, "5 s");
-        assert_eq!(fractional.mid_label, "2500 ms");
+        assert_eq!(fractional.mid_label, "2,5 s");
+        assert_eq!(fractional.caption, "Median = 2,5 s, Max = 2,5 s");
     }
 
     #[test]
-    fn axis_labels_stay_in_integer_milliseconds() {
+    fn axis_labels_drop_a_zero_decimal() {
         assert_eq!(axis_latency(999), "999 ms");
         assert_eq!(axis_latency(1_000), "1 s");
-        assert_eq!(axis_latency(1_400), "1400 ms");
-        assert_eq!(axis_latency(2_500), "2500 ms");
+        assert_eq!(axis_latency(1_400), "1,4 s");
+        assert_eq!(axis_latency(2_500), "2,5 s");
         assert_eq!(axis_latency(10_000), "10 s");
     }
 

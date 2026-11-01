@@ -222,7 +222,7 @@ h2 {
   white-space: nowrap;
 }
 /* Invisible sizers give the column the width of the actual labels, not a
-   worst-case string like "2500 ms" that the current data never produces. */
+   worst-case string like "2,5 s" that the current data never produces. */
 .chart-y-size {
   display: block;
   height: 0;
