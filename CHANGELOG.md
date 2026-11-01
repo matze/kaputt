@@ -15,10 +15,6 @@ and this project adheres to
   batch appears after fifteen minutes and updates in place instead of adding
   an entry per check or bounce.
 
-## [0.4.0]
-
-- Tweak frontend layout.
-
 ## [0.3.0]
 
 ### Added

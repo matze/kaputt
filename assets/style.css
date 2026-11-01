@@ -55,7 +55,7 @@ a:hover { text-decoration: underline; }
 
 .site {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
   max-width: 700px;
@@ -66,18 +66,29 @@ a:hover { text-decoration: underline; }
 .brand { font-weight: 600; font-size: 17px; letter-spacing: -.01em; }
 .brand .ka { color: var(--down); }
 
-/* The nav stays one line; the two links keep their thumb-sized hit area. */
+/* The nav is two icons: no text, so each link is its own square hit area.
+   A 36px box centres a 17px glyph, so the box hangs 9.5px of slack past the
+   glyph on each side; pull that back on the right so the last glyph's edge
+   lands on the text column edge, where the uptime figures end. */
 .site nav {
   flex: none;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: -9.5px;
 }
 
 .site nav a {
-  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
   color: var(--muted);
-  padding: 14px 6px;
-  margin: -14px -6px;
 }
+
+.site nav a:hover { color: var(--fg); }
+.site nav svg { display: block; }
 
 .page { max-width: 700px; margin: 0 auto; padding: 0 20px 32px; }
 
@@ -317,6 +328,11 @@ h2 {
 .links { margin: 0; padding-left: 18px; font-size: 14.5px; }
 .links li { margin: 3px 0; }
 .prose p { margin: 0 0 12px; font-size: 14.5px; }
+.feed-link a {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
 
 /* Phones ------------------------------------------------------------- */
 
