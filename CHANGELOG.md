@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.5.0]
+
 ### Added
 
 - RSS feeds for all enabled targets at `/feed.xml` and for one target at
