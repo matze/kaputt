@@ -8,6 +8,10 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.4.0]
+
+- Tweak frontend layout.
+
 ## [0.3.0]
 
 ### Added
