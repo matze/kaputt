@@ -8,6 +8,13 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- RSS feeds for all enabled targets at `/feed.xml` and for one target at
+  `/t/{id}/feed.xml`. Incidents are batched by target and a six-hour gap; a
+  batch appears after fifteen minutes and updates in place instead of adding
+  an entry per check or bounce.
+
 ## [0.4.0]
 
 - Tweak frontend layout.

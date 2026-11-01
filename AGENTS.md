@@ -39,7 +39,7 @@ rustfmt and clippy settings apply.
 | `src/probe.rs` | header-only HTTP probe, `ErrorKind` vocabulary |
 | `src/scheduler.rs` | per-target loop and incident state machine |
 | `src/rollup.rs` | `daily_stats` rollups and retention |
-| `src/views.rs` | aggregation, German formatting, view structs |
+| `src/views.rs` | aggregation, German formatting, view structs, RSS batching |
 | `src/day.rs` | Europe/Berlin local days and timestamps |
 | `src/server.rs` | axum routes and embedded assets |
 | `templates/`, `assets/` | askama templates, CSS, vendored htmx, Geist woff2 |
@@ -68,13 +68,23 @@ rustfmt and clippy settings apply.
   target.
 - `daily_stats` holds one row per target and local day. Raw checks live 90 days,
   rollups 2 years. A data gap never counts as downtime.
+- RSS feeds are read-only projections of `incidents`, never a second event
+  stream. `/feed.xml` covers enabled targets, `/t/{id}/feed.xml` one target even
+  after it is disabled. One item per target and disturbance batch: incidents
+  less than 6 h apart merge, a batch appears once one incident lasted 15 min,
+  the window is 30 local days and the feed is capped at 50 items. The GUID is
+  `kaputt:v1:<target>:<first incident id>` and later incidents update that item
+  in place. Never emit per-check or per-recovery items, and never change the
+  incident thresholds or stored rows for the feed. Absolute links use
+  `base_url` from `config.toml`, not the request `Host`.
 - Serve pages with `Cache-Control: no-store`. `/healthz` is liveness only: it
   queries no database and contacts no target.
 
 ## Verification
 
-`cargo test` covers config parsing, rollups, incidents and view rendering. For a
-smoke test, run `cargo run -- probe --once` against real targets. Non-zero exit
-means at least one target is down. Then run `cargo run -- serve` and check
-`curl -s localhost:8080/healthz` and `curl -s localhost:8080/`. `kaputt.db` is
+`cargo test` covers config parsing, rollups, incidents, feed batching and view
+rendering. For a smoke test, run `cargo run -- probe --once` against real
+targets. Non-zero exit means at least one target is down. Then run
+`cargo run -- serve` and check `curl -s localhost:8080/healthz`,
+`curl -s localhost:8080/` and `curl -s localhost:8080/feed.xml`. `kaputt.db` is
 generated and gitignored. Delete it to start with an empty history.

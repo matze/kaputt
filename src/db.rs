@@ -353,6 +353,19 @@ pub struct IncidentSummary {
     pub detail: Option<String>,
 }
 
+/// One incident with the identity a feed item needs: the row id for a stable
+/// GUID, and the target it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedIncident {
+    pub id: i64,
+    pub target_id: String,
+    pub target_name: String,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub cause: String,
+    pub detail: Option<String>,
+}
+
 /// A target plus what the pages need from its history: newest check, newest
 /// successful check, and the incident still open (if any).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -540,6 +553,49 @@ impl Store {
                             detail: row.get(3)?,
                         })
                     })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok::<_, rusqlite::Error>(rows)
+            })
+            .await
+            .map_err(Into::into)
+    }
+
+    /// Incidents a feed can show: everything of `target_id` (or every enabled
+    /// target when `None`) that ended at or after `since`. An incident still
+    /// running is always included, however old it is.
+    pub async fn feed_incidents(
+        &self,
+        target_id: Option<&str>,
+        since: i64,
+        enabled_only: bool,
+    ) -> anyhow::Result<Vec<FeedIncident>> {
+        let target_id = target_id.map(str::to_string);
+        self.conn
+            .call(move |conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT i.id, i.target_id, t.name, i.started_at, i.ended_at,
+                            i.cause, i.detail
+                     FROM incidents i JOIN targets t ON t.id = i.target_id
+                     WHERE (?1 IS NULL OR i.target_id = ?1)
+                       AND (i.ended_at IS NULL OR i.ended_at >= ?2)
+                       AND (?3 = 0 OR t.enabled = 1)
+                     ORDER BY i.target_id, i.started_at, i.id",
+                )?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![target_id, since, enabled_only as i64],
+                        |row| {
+                            Ok(FeedIncident {
+                                id: row.get(0)?,
+                                target_id: row.get(1)?,
+                                target_name: row.get(2)?,
+                                started_at: row.get(3)?,
+                                ended_at: row.get(4)?,
+                                cause: row.get(5)?,
+                                detail: row.get(6)?,
+                            })
+                        },
+                    )?
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok::<_, rusqlite::Error>(rows)
             })
@@ -1104,6 +1160,72 @@ mod tests {
             .await
             .expect_err("second close must be rejected");
         assert!(err.to_string().contains("not open"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn feed_incidents_filters_scope_and_window() {
+        let (_dir, _path, store) = open_temp().await;
+        let mut disabled = target("b", "B");
+        disabled.enabled = false;
+        store
+            .upsert_targets(&[target("a", "A"), disabled])
+            .await
+            .expect("upsert");
+
+        let old = store
+            .open_incident("a", 100, "timeout", None)
+            .await
+            .expect("open old");
+        store.close_incident(old, 200).await.expect("close old");
+        let recent = store
+            .open_incident("a", 300, "status", Some("HTTP 503, erwartet 200".into()))
+            .await
+            .expect("open recent");
+        store
+            .close_incident(recent, 400)
+            .await
+            .expect("close recent");
+        store
+            .open_incident("a", 500, "dns", None)
+            .await
+            .expect("open running");
+        let disabled_incident = store
+            .open_incident("b", 600, "connect", None)
+            .await
+            .expect("open disabled");
+        store
+            .close_incident(disabled_incident, 700)
+            .await
+            .expect("close disabled");
+
+        let all = store
+            .feed_incidents(None, 300, true)
+            .await
+            .expect("all feed");
+        assert_eq!(
+            all.iter()
+                .map(|incident| (incident.started_at, incident.ended_at))
+                .collect::<Vec<_>>(),
+            vec![(300, Some(400)), (500, None)]
+        );
+        assert!(all.iter().all(|incident| incident.target_id == "a"));
+
+        // An old incident that is still open survives the window.
+        let since_newer = store
+            .feed_incidents(Some("a"), 600, false)
+            .await
+            .expect("open incident");
+        assert_eq!(since_newer.len(), 1);
+        assert_eq!(since_newer[0].ended_at, None);
+
+        // A disabled target keeps its own feed readable.
+        let one = store
+            .feed_incidents(Some("b"), 300, false)
+            .await
+            .expect("target feed");
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].target_name, "B");
+        assert_eq!(one[0].cause, "connect");
     }
 
     #[test]

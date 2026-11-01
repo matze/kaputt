@@ -11,6 +11,7 @@ use serde::Deserialize;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 const DEFAULT_DATABASE: &str = "kaputt.db";
+const DEFAULT_BASE_URL: &str = "https://kaputt.matze.lol";
 const DEFAULT_EXPECT_STATUS: u16 = 200;
 const DEFAULT_INTERVAL_S: u32 = 300;
 const DEFAULT_TIMEOUT_S: u32 = 10;
@@ -23,6 +24,9 @@ pub struct Config {
     pub listen: String,
     #[serde(default = "default_database")]
     pub database: PathBuf,
+    /// Public origin used for absolute feed links, without a trailing slash.
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -65,6 +69,25 @@ impl Config {
         self.listen
             .parse::<SocketAddr>()
             .map_err(|e| format!("listen {:?}: {e}", self.listen))?;
+
+        let base = url::Url::parse(&self.base_url)
+            .map_err(|e| format!("base_url {:?}: {e}", self.base_url))?;
+        if !matches!(base.scheme(), "http" | "https") {
+            return Err(format!(
+                "base_url {:?}: scheme {:?} is not http or https",
+                self.base_url,
+                base.scheme()
+            ));
+        }
+        if base.host_str().is_none() {
+            return Err(format!("base_url {:?}: has no host", self.base_url));
+        }
+        if base.query().is_some() || base.fragment().is_some() {
+            return Err(format!(
+                "base_url {:?}: must not carry a query or fragment",
+                self.base_url
+            ));
+        }
 
         let mut seen = HashSet::new();
         for target in &self.targets {
@@ -134,6 +157,10 @@ fn default_database() -> PathBuf {
     PathBuf::from(DEFAULT_DATABASE)
 }
 
+fn default_base_url() -> String {
+    DEFAULT_BASE_URL.to_string()
+}
+
 fn default_expect_status() -> u16 {
     DEFAULT_EXPECT_STATUS
 }
@@ -176,6 +203,7 @@ mod tests {
         let config = parse(MINIMAL).expect("valid config");
         assert_eq!(config.listen, "127.0.0.1:8080");
         assert_eq!(config.database, PathBuf::from("kaputt.db"));
+        assert_eq!(config.base_url, "https://kaputt.matze.lol");
         let target = &config.targets[0];
         assert_eq!(target.expect_status, 200);
         assert_eq!(target.interval_s, 300);
@@ -192,6 +220,7 @@ mod tests {
             r#"
             listen = "0.0.0.0:9000"
             database = "/var/lib/kaputt/kaputt.db"
+            base_url = "https://status.example.org"
 
             [[targets]]
             id = "opac"
@@ -209,6 +238,7 @@ mod tests {
         .expect("valid config");
         assert_eq!(config.listen, "0.0.0.0:9000");
         assert_eq!(config.database, PathBuf::from("/var/lib/kaputt/kaputt.db"));
+        assert_eq!(config.base_url, "https://status.example.org");
         let target = &config.targets[0];
         assert_eq!(target.expect_status, 404);
         assert_eq!(target.interval_s, 60);
@@ -310,9 +340,22 @@ mod tests {
     }
 
     #[test]
+    fn bad_base_urls_are_rejected() {
+        for raw in [
+            "base_url = \"ftp://example.org\"",
+            "base_url = \"not a url\"",
+            "base_url = \"https://example.org/?q=1\"",
+            "base_url = \"https://example.org/#x\"",
+        ] {
+            let err = parse(&format!("{raw}\n{MINIMAL}\n")).expect_err(raw);
+            assert!(err.contains("base_url"), "{raw}: {err}");
+        }
+    }
+
+    #[test]
     fn shipped_config_is_valid() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("config.toml");
         let config = Config::load(&path).expect("config.toml must load");
-        assert_eq!(config.targets.len(), 4);
+        assert_eq!(config.targets.len(), 5);
     }
 }

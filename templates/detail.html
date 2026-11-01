@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ target.name }} — kaputt.matze.lol{% endblock %}
+{% block feed %}<link rel="alternate" type="application/rss+xml" title="{{ target.name }}" href="{{ feed_href }}">{% endblock %}
 {% block content %}
 <h1 class="detail-name"><span class="dot tone-{{ target.tone }}" aria-hidden="true"></span>{{ target.name }}</h1>
 {% match target.note %}
@@ -62,7 +63,8 @@
 {% endif %}
 </section>
 
-<h2>Störungen</h2>
+<h2 id="stoerungen">Störungen</h2>
+<p class="muted feed-link"><a href="{{ feed_href }}">RSS-Feed für dieses Ziel</a></p>
 {% if incidents.is_empty() %}
 <p class="muted">Keine gespeichert.</p>
 {% else %}

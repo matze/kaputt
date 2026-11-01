@@ -49,6 +49,14 @@ pub fn bounds(date: Date) -> (i64, i64) {
     (midnight(date), midnight(shift(date, 1)))
 }
 
+/// RFC 2822 date for feed timestamps, in Berlin time with the numeric offset
+/// the day actually has (DST-aware).
+pub fn rfc2822(ts: i64) -> String {
+    let timestamp = Timestamp::from_second(ts).unwrap_or(Timestamp::UNIX_EPOCH);
+    let zoned = timestamp.to_zoned(tz().clone());
+    jiff::fmt::rfc2822::to_string(&zoned).unwrap_or_default()
+}
+
 /// Stable key of a day in the database: `2026-10-30`, which also sorts
 /// chronologically as text.
 pub fn key(date: Date) -> String {
@@ -106,6 +114,21 @@ mod tests {
         assert_eq!(
             shift_years(Date::new(2026, 10, 30).expect("date"), 2),
             Date::new(2024, 10, 30).expect("date")
+        );
+    }
+
+    #[test]
+    fn rfc2822_carries_the_local_offset() {
+        let summer = midnight(Date::new(2026, 7, 1).expect("date"));
+        let winter = midnight(Date::new(2026, 1, 1).expect("date"));
+        assert!(rfc2822(summer).ends_with("+0200"));
+        assert!(rfc2822(winter).ends_with("+0100"));
+        assert_eq!(
+            jiff::fmt::rfc2822::parse(&rfc2822(summer))
+                .expect("round trip")
+                .timestamp()
+                .as_second(),
+            summer
         );
     }
 }

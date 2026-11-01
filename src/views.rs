@@ -10,10 +10,24 @@ use askama::Template;
 use jiff::civil::Date;
 
 use crate::day::{self, at, date_of};
-use crate::db::{ChartCheck, CheckSummary, DailyStat, HistoryPoint, IncidentSummary, TargetState};
+use crate::db::{
+    ChartCheck, CheckSummary, DailyStat, FeedIncident, HistoryPoint, IncidentSummary, TargetState,
+};
 
 /// Bars on the overview: one per day, including today.
 pub const BAR_DAYS: i64 = 90;
+/// Feeds publish incidents, not checks. A blip below this never reaches a
+/// subscriber; a still-running incident becomes feed-worthy at this age.
+pub const FEED_MIN_INCIDENT_S: i64 = 15 * 60;
+/// Incidents of one target closer than this collapse into one item, so a
+/// flapping target cannot add an entry per bounce.
+pub const FEED_BATCH_GAP_S: i64 = 6 * 3600;
+/// Feed history, in local days.
+pub const FEED_WINDOW_DAYS: i64 = 30;
+/// Hard cap on items in one feed, newest first.
+pub const FEED_MAX_ITEMS: usize = 50;
+/// Remote error details are untrusted and can be long; feeds stay small.
+const FEED_DETAIL_MAX: usize = 300;
 /// Horizontal buckets of the latency chart. Raw checks arrive every few
 /// minutes, so one bucket per sample would draw a dense, jagged line in the
 /// short window and tens of thousands of points in the long one. Averaging
@@ -862,6 +876,253 @@ pub fn incident_view(incident: &IncidentSummary, now: i64) -> IncidentView {
     }
 }
 
+/// Start of the feed window: local midnight 30 days back, so the window does
+/// not drift with DST.
+pub fn feed_since(now: i64) -> i64 {
+    let start = day::shift(date_of(now), -FEED_WINDOW_DAYS);
+    day::bounds(start).0
+}
+
+/// Relative path of a target's own feed.
+pub fn feed_href(target_id: &str) -> String {
+    format!("/t/{target_id}/feed.xml")
+}
+
+/// One feed entry: a batch of incidents of a single target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedItem {
+    pub guid: String,
+    pub title: String,
+    pub link: String,
+    pub pub_date: String,
+    pub description: String,
+    pub category: String,
+}
+
+#[derive(Debug, Clone)]
+struct Batch<'a> {
+    incidents: Vec<&'a FeedIncident>,
+}
+
+impl<'a> Batch<'a> {
+    fn new(incident: &'a FeedIncident) -> Self {
+        Self {
+            incidents: vec![incident],
+        }
+    }
+
+    fn target_id(&self) -> &str {
+        &self.incidents[0].target_id
+    }
+
+    fn started_at(&self) -> i64 {
+        self.incidents[0].started_at
+    }
+
+    /// When the batch last changed: the end of its newest incident, or now
+    /// while one is still running.
+    fn last_activity(&self, now: i64) -> i64 {
+        self.incidents
+            .last()
+            .and_then(|incident| incident.ended_at)
+            .unwrap_or(now)
+    }
+
+    fn joinable(&self, incident: &FeedIncident, now: i64) -> bool {
+        incident.target_id == self.target_id()
+            && incident.started_at - self.last_activity(now) <= FEED_BATCH_GAP_S
+    }
+
+    /// A batch is feed-worthy once one incident in it lasted the minimum
+    /// duration. A closed blip never ages into eligibility; an open incident
+    /// does at `started_at + FEED_MIN_INCIDENT_S`.
+    fn publishable(&self, now: i64) -> bool {
+        self.incidents.iter().any(|incident| {
+            incident.ended_at.unwrap_or(now) - incident.started_at >= FEED_MIN_INCIDENT_S
+        })
+    }
+
+    fn item(&self, base_url: &str) -> FeedItem {
+        let first = self.incidents[0];
+        let count = self.incidents.len();
+        let open = self
+            .incidents
+            .iter()
+            .any(|incident| incident.ended_at.is_none());
+        let end = self
+            .incidents
+            .iter()
+            .filter_map(|incident| incident.ended_at)
+            .max();
+        let recovered: i64 = self
+            .incidents
+            .iter()
+            .filter_map(|incident| {
+                incident
+                    .ended_at
+                    .map(|ended_at| ended_at - incident.started_at)
+            })
+            .sum();
+
+        let title = match (count, open) {
+            (1, true) => format!(
+                "{}: Ausfall seit {}",
+                first.target_name,
+                stamp(first.started_at)
+            ),
+            (1, false) => format!(
+                "{}: Ausfall am {}",
+                first.target_name,
+                date_label(at(first.started_at).date())
+            ),
+            (_, true) => format!("{}: {count} Ausfälle, aktuell gestört", first.target_name),
+            (_, false) => format!("{}: {count} Ausfälle", first.target_name),
+        };
+
+        let mut lines = vec![
+            format!("Beginn: {}", stamp(first.started_at)),
+            match end {
+                Some(ended_at) => format!("Ende: {}", stamp(ended_at)),
+                None => "Ende: andauernd".to_string(),
+            },
+        ];
+        if count == 1 {
+            if let Some(ended_at) = end {
+                lines.push(format!("Dauer: {}", duration(ended_at - first.started_at)));
+            }
+        } else {
+            lines.push(format!("Ausfälle: {count}"));
+            if recovered > 0 {
+                lines.push(format!("Behobene Dauer: {}", duration(recovered)));
+            }
+        }
+
+        let mut causes = Vec::new();
+        for incident in &self.incidents {
+            let cause = cause_de(&incident.cause);
+            if !causes.contains(&cause) {
+                causes.push(cause);
+            }
+        }
+        lines.push(format!("Ursachen: {}", causes.join(", ")));
+
+        if let Some(detail) = self
+            .incidents
+            .iter()
+            .filter_map(|incident| detail_extra(&incident.cause, incident.detail.as_deref()))
+            .next()
+        {
+            lines.push(format!("Details: {}", truncate_detail(&detail)));
+        }
+
+        FeedItem {
+            guid: format!("kaputt:v1:{}:{}", first.target_id, first.id),
+            title,
+            link: format!("{base_url}/t/{}#stoerungen", first.target_id),
+            pub_date: day::rfc2822(first.started_at),
+            description: lines.join("\n"),
+            category: first.target_name.clone(),
+        }
+    }
+}
+
+fn truncate_detail(text: &str) -> String {
+    if text.chars().count() <= FEED_DETAIL_MAX {
+        return text.to_string();
+    }
+    let mut short: String = text.chars().take(FEED_DETAIL_MAX - 1).collect();
+    short.push('…');
+    short
+}
+
+/// Collapse incidents into feed items: mature batches only, newest first.
+/// Returns the items and the newest activity, which is the feed's
+/// `lastBuildDate`.
+pub fn feed_items(
+    base_url: &str,
+    incidents: &[FeedIncident],
+    now: i64,
+) -> (Vec<FeedItem>, Option<i64>) {
+    let mut incidents: Vec<&FeedIncident> = incidents.iter().collect();
+    incidents.sort_by_key(|incident| {
+        (
+            incident.target_id.as_str(),
+            incident.started_at,
+            incident.id,
+        )
+    });
+
+    let mut batches: Vec<Batch> = Vec::new();
+    for incident in incidents {
+        match batches.last_mut() {
+            Some(batch) if batch.joinable(incident, now) => batch.incidents.push(incident),
+            _ => batches.push(Batch::new(incident)),
+        }
+    }
+
+    let window_start = feed_since(now);
+    let mut items: Vec<(i64, i64, FeedItem)> = batches
+        .into_iter()
+        .filter(|batch| batch.last_activity(now) >= window_start)
+        .filter(|batch| batch.publishable(now))
+        .map(|batch| {
+            let started_at = batch.started_at();
+            let last_activity = batch.last_activity(now);
+            (started_at, last_activity, batch.item(base_url))
+        })
+        .collect();
+    items.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
+    items.truncate(FEED_MAX_ITEMS);
+    let last_activity = items.iter().map(|(_, activity, _)| *activity).max();
+    (
+        items.into_iter().map(|(_, _, item)| item).collect(),
+        last_activity,
+    )
+}
+
+#[derive(Template)]
+#[template(path = "feed.xml")]
+pub struct FeedPage {
+    pub title: String,
+    pub link: String,
+    pub self_link: String,
+    pub description: String,
+    pub last_build: String,
+    pub items: Vec<FeedItem>,
+}
+
+/// Head and items of one feed. `target` selects the single-target feed; the
+/// absolute links come from the configured public origin.
+pub fn feed_page(
+    base_url: &str,
+    target: Option<&TargetState>,
+    incidents: &[FeedIncident],
+    now: i64,
+) -> FeedPage {
+    let base = base_url.trim_end_matches('/');
+    let (title, link, self_link) = match target {
+        Some(target) => (
+            format!("{} — kaputt.matze.lol", target.name),
+            format!("{base}/t/{}", target.id),
+            format!("{base}{}", feed_href(&target.id)),
+        ),
+        None => (
+            "kaputt.matze.lol — Status".to_string(),
+            format!("{base}/"),
+            format!("{base}/feed.xml"),
+        ),
+    };
+    let (items, last_activity) = feed_items(base, incidents, now);
+    FeedPage {
+        title,
+        link,
+        self_link,
+        description: "Antworten Karlsruher Stadtseiten, privat gemessen.".to_string(),
+        last_build: day::rfc2822(last_activity.unwrap_or(now)),
+        items,
+    }
+}
+
 pub struct TargetLink {
     pub name: String,
     pub url: String,
@@ -908,6 +1169,7 @@ pub struct DetailPage {
     pub range_links: Vec<RangeLink>,
     pub chart: Chart,
     pub incidents: Vec<IncidentView>,
+    pub feed_href: String,
 }
 
 #[derive(Template)]
@@ -941,6 +1203,18 @@ mod tests {
             checks,
             ok,
             down_seconds,
+        }
+    }
+
+    fn feed_incident(id: i64, target: &str, start: i64, end: Option<i64>) -> FeedIncident {
+        FeedIncident {
+            id,
+            target_id: target.into(),
+            target_name: target.to_ascii_uppercase(),
+            started_at: start,
+            ended_at: end,
+            cause: "timeout".into(),
+            detail: Some("operation timed out".into()),
         }
     }
 
@@ -1467,5 +1741,140 @@ mod tests {
             links.iter().map(|link| link.active).collect::<Vec<_>>(),
             vec![false, true, false]
         );
+        assert_eq!(feed_href("opac"), "/t/opac/feed.xml");
+    }
+
+    #[test]
+    fn feed_drops_a_lone_blip() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents = [feed_incident(1, "a", now - 3600, Some(now - 3300))];
+        let (items, last) = feed_items("https://example.org", &incidents, now);
+        assert!(items.is_empty());
+        assert_eq!(last, None);
+    }
+
+    #[test]
+    fn feed_publishes_an_open_incident_when_it_matures() {
+        let now = berlin(2026, 10, 30, 12);
+        let young = [feed_incident(1, "a", now - FEED_MIN_INCIDENT_S + 1, None)];
+        assert!(feed_items("https://example.org", &young, now).0.is_empty());
+
+        let mature = [feed_incident(1, "a", now - FEED_MIN_INCIDENT_S, None)];
+        let (items, _) = feed_items("https://example.org", &mature, now);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].title.contains("Ausfall seit"));
+        assert!(items[0].description.contains("Ende: andauernd"));
+        assert!(!items[0].description.contains("Dauer:"));
+    }
+
+    #[test]
+    fn feed_batches_nearby_incidents_and_keeps_the_first_guid() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents = [
+            feed_incident(1, "a", now - 10_000, Some(now - 9_000)),
+            feed_incident(2, "a", now - 8_000, Some(now - 7_000)),
+        ];
+        let (items, _) = feed_items("https://example.org", &incidents, now);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].guid, "kaputt:v1:a:1");
+        assert_eq!(items[0].title, "A: 2 Ausfälle");
+        assert!(items[0].description.contains("Ausfälle: 2"));
+        assert!(items[0].description.contains("Behobene Dauer: 33 Min"));
+        assert_eq!(items[0].link, "https://example.org/t/a#stoerungen");
+    }
+
+    #[test]
+    fn feed_keeps_incidents_beyond_the_gap_apart() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents = [
+            feed_incident(1, "a", now - 100_000, Some(now - 90_000)),
+            feed_incident(2, "a", now - 60_000, Some(now - 50_000)),
+        ];
+        let (items, _) = feed_items("https://example.org", &incidents, now);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].guid, "kaputt:v1:a:2");
+        assert_eq!(items[1].guid, "kaputt:v1:a:1");
+    }
+
+    #[test]
+    fn feed_never_batches_across_targets() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents = [
+            feed_incident(1, "a", now - 10_000, Some(now - 9_000)),
+            feed_incident(2, "b", now - 8_500, Some(now - 7_500)),
+        ];
+        let (items, _) = feed_items("https://example.org", &incidents, now);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].link, "https://example.org/t/b#stoerungen");
+    }
+
+    #[test]
+    fn feed_hides_incidents_that_ended_before_the_window() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents = [feed_incident(
+            1,
+            "a",
+            now - 40 * 86400,
+            Some(now - 40 * 86400 + 3600),
+        )];
+        assert!(
+            feed_items("https://example.org", &incidents, now)
+                .0
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn feed_caps_items_newest_first() {
+        let now = berlin(2026, 10, 30, 12);
+        let incidents: Vec<FeedIncident> = (0..60)
+            .map(|index| {
+                let start = now - index * 13 * 3600;
+                feed_incident(index, "a", start, Some(start + 1200))
+            })
+            .collect();
+        let (items, _) = feed_items("https://example.org", &incidents, now);
+        assert_eq!(items.len(), FEED_MAX_ITEMS);
+        assert_eq!(items[0].guid, "kaputt:v1:a:0");
+    }
+
+    #[test]
+    fn feed_page_builds_absolute_links() {
+        let now = berlin(2026, 10, 30, 12);
+        let state = TargetState {
+            id: "a".into(),
+            name: "A".into(),
+            url: "https://a.example.org/".into(),
+            expect_status: 200,
+            interval_s: 300,
+            last_check: None,
+            last_ok_ts: None,
+            open_incident: None,
+        };
+        let all = feed_page("https://status.example.org/", None, &[], now);
+        assert_eq!(all.self_link, "https://status.example.org/feed.xml");
+        assert_eq!(all.link, "https://status.example.org/");
+        assert!(!all.last_build.is_empty());
+
+        let one = feed_page("https://status.example.org/", Some(&state), &[], now);
+        assert_eq!(one.self_link, "https://status.example.org/t/a/feed.xml");
+        assert_eq!(one.link, "https://status.example.org/t/a");
+        assert_eq!(one.title, "A — kaputt.matze.lol");
+    }
+
+    #[test]
+    fn feed_xml_escapes_remote_text() {
+        let now = berlin(2026, 10, 30, 12);
+        let mut incident = feed_incident(1, "a", now - 1200, None);
+        incident.target_name = "Stadt <X> & Co".into();
+        incident.cause = "status".into();
+        incident.detail = Some("<script>alert(1)</script>".into());
+        let page = feed_page("https://example.org", None, &[incident], now);
+        let xml = page.render().expect("feed renders");
+        assert!(xml.contains("&#60;X&#62;"));
+        assert!(xml.contains("&#60;script&#62;"));
+        assert!(!xml.contains("<X>"));
+        assert!(!xml.contains("<script>"));
+        assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
     }
 }

@@ -9,12 +9,13 @@
   <link rel="preload" href="/assets/geist.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23cf222e'/%3E%3C/svg%3E">
+  {% block feed %}<link rel="alternate" type="application/rss+xml" title="kaputt.matze.lol" href="/feed.xml">{% endblock %}
   <script src="/assets/htmx.min.js" defer></script>
 </head>
 <body>
   <header class="site">
     <a class="brand" href="/"><span class="ka">ka</span>putt.matze.lol</a>
-    <nav><a href="/about">Über</a></nav>
+    <nav><a href="/about">Über</a> · <a href="/feed.xml">RSS</a></nav>
   </header>
   <main class="page">
     {% block content %}{% endblock %}
