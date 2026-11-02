@@ -9,8 +9,9 @@ use anyhow::Context;
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
@@ -44,33 +45,44 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         .with_context(|| format!("cannot listen on {}", config.listen))?;
 
     let tasks = scheduler::spawn(&config, &store)?;
+
     if tasks.is_empty() {
         tracing::warn!("no enabled targets; the status page would stay empty");
     } else {
         tracing::info!(targets = tasks.len(), "scheduler started");
     }
+
     // The rollup loop keeps the day bars, the uptime windows and retention up
     // to date; the first pass already ran before the listener was bound.
     let _rollup = rollup::spawn(store.clone());
     tracing::info!(listen = %config.listen, "serving");
 
-    let app = Router::new()
+    let pages = Router::new()
         .route("/", get(overview))
-        .route("/feed.xml", get(feed_all))
         .route("/partials/status", get(status_partial))
         .route("/t/{id}", get(detail))
-        .route("/t/{id}/feed.xml", get(feed_target))
         .route("/about", get(about))
+        .layer(middleware::from_fn(no_store));
+
+    let feeds = Router::new()
+        .route("/feed.xml", get(feed_all))
+        .route("/t/{id}/feed.xml", get(feed_target));
+
+    let assets = Router::new()
         .route("/healthz", get(healthz))
         .route("/assets/style.css", get(style_css))
         .route("/assets/geist.woff2", get(geist_woff2))
-        .route("/assets/htmx.min.js", get(htmx_js))
-        .with_state(App {
-            store,
-            base_url: config.base_url,
-        });
+        .route("/assets/htmx.min.js", get(htmx_js));
+
+    let state = App {
+        store,
+        base_url: config.base_url,
+    };
+
+    let app = pages.merge(feeds).merge(assets).with_state(state);
 
     axum::serve(listener, app).await.context("server failed")?;
+
     Ok(())
 }
 
@@ -115,19 +127,19 @@ async fn cards(
     Ok(cards)
 }
 
-async fn overview(State(app): State<App>) -> Result<Response, AppError> {
+async fn overview(State(app): State<App>) -> Result<impl IntoResponse, AppError> {
     let now = db::unix_now();
     let states = app.store.enabled_targets().await?;
     let targets = cards(&app.store, &states, now).await?;
-    Ok(page(views::OverviewPage { targets }))
+    Ok(WebTemplate(views::OverviewPage { targets }))
 }
 
 /// The region HTMX replaces every 30 seconds; same markup as the page body.
-async fn status_partial(State(app): State<App>) -> Result<Response, AppError> {
+async fn status_partial(State(app): State<App>) -> Result<impl IntoResponse, AppError> {
     let now = db::unix_now();
     let states = app.store.enabled_targets().await?;
     let targets = cards(&app.store, &states, now).await?;
-    Ok(page(views::StatusPartial { targets }))
+    Ok(WebTemplate(views::StatusPartial { targets }))
 }
 
 /// All enabled targets, one entry per incident batch.
@@ -203,7 +215,7 @@ async fn detail(
     Path(id): Path<String>,
     Query(query): Query<DetailQuery>,
     State(app): State<App>,
-) -> Result<Response, AppError> {
+) -> Result<impl IntoResponse, AppError> {
     let now = db::unix_now();
     let Some(state) = app.store.target(&id).await? else {
         return Err(AppError::NotFound);
@@ -230,7 +242,7 @@ async fn detail(
         .map(|incident| views::incident_view(incident, now))
         .collect();
     let interval_s = i64::from(state.interval_s);
-    Ok(page(views::DetailPage {
+    Ok(WebTemplate(views::DetailPage {
         target,
         url: state.url,
         windows,
@@ -241,9 +253,9 @@ async fn detail(
     }))
 }
 
-async fn about(State(app): State<App>) -> Result<Response, AppError> {
+async fn about(State(app): State<App>) -> Result<impl IntoResponse, AppError> {
     let states = app.store.enabled_targets().await?;
-    Ok(page(views::AboutPage {
+    Ok(WebTemplate(views::AboutPage {
         targets: states
             .iter()
             .map(|state| views::TargetLink {
@@ -256,8 +268,14 @@ async fn about(State(app): State<App>) -> Result<Response, AppError> {
 }
 
 /// HTML is never cached: a status page must not show an outage that ended.
-fn page<T: askama::Template>(template: T) -> Response {
-    ([(header::CACHE_CONTROL, "no-store")], WebTemplate(template)).into_response()
+/// Applied to the page routes (and their error responses) only, so assets keep
+/// their own `Cache-Control`.
+async fn no_store(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
 }
 
 /// Liveness only: no database query, no outbound request to a target.
