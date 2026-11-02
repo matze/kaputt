@@ -74,7 +74,7 @@ impl Outcome {
             status_code,
             latency_ms: latency.map(|d| d.as_millis() as i64),
             error_kind: Some(kind),
-            error_detail: Some(truncate(detail, 400)),
+            error_detail: Some(truncate(detail)),
         }
     }
 }
@@ -203,11 +203,13 @@ fn error_chain(err: &reqwest::Error) -> Vec<String> {
     messages
 }
 
-fn truncate(text: String, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
+fn truncate(text: String) -> String {
+    const MAX_CHARS: usize = 400;
+
+    if text.chars().count() <= MAX_CHARS {
         text
     } else {
-        let mut short: String = text.chars().take(max_chars).collect();
+        let mut short: String = text.chars().take(MAX_CHARS).collect();
         short.push('…');
         short
     }
@@ -400,9 +402,9 @@ mod tests {
 
     #[test]
     fn long_details_are_truncated_on_char_boundaries() {
-        let short = truncate("ä".repeat(500), 400);
+        let short = truncate("ä".repeat(500));
         assert_eq!(short.chars().count(), 401);
         assert!(short.ends_with('…'));
-        assert_eq!(truncate("ok".into(), 400), "ok");
+        assert_eq!(truncate("ok".into()), "ok");
     }
 }
