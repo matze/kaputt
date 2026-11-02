@@ -41,7 +41,8 @@
       <rect class="no-data" x="{{ gap.x }}" y="{{ chart.y_top }}" width="{{ gap.width }}" height="{{ chart.plot_height }}"></rect>
       {% endfor %}
       {% for band in chart.bands %}
-      <rect class="outage" x="{{ band.x }}" y="{{ chart.y_top }}" width="{{ band.width }}" height="{{ chart.plot_height }}"></rect>
+      <line class="outage" x1="{{ band.x }}" y1="{{ chart.y_top }}" x2="{{ band.x }}" y2="{{ chart.y_base }}"></line>
+      <line class="outage" x1="{{ band.x + band.width }}" y1="{{ chart.y_top }}" x2="{{ band.x + band.width }}" y2="{{ chart.y_base }}"></line>
       {% endfor %}
       <line class="grid" x1="{{ chart.x_left }}" x2="{{ chart.x_right }}" y1="{{ chart.y_top }}" y2="{{ chart.y_top }}"></line>
       {% if chart.mid_visible %}

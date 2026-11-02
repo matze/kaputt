@@ -12,6 +12,9 @@ and this project adheres to
 
 - Pages and feeds show only the German cause label, not the raw probe error
   detail.
+- The latency chart bounds an outage with red lines at its start and end
+  instead of filling the whole stretch, so a long outage no longer hides the
+  curve.
 
 ## [0.7.0]
 

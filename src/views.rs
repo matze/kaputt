@@ -566,7 +566,7 @@ fn push_band(bands: &mut Vec<Band>, from: i64, until: i64, x_of: &impl Fn(i64) -
 /// Failed checks mark the stretches without a usable measurement. A failure
 /// covers one probe interval at most — the same rule the rollup uses for
 /// `down_seconds` — so a gap between checks never becomes downtime. Bands that
-/// touch are merged into one rectangle.
+/// touch are merged into one span, drawn as a red rule at its start and end.
 fn outage_bands(
     checks: &[ChartCheck],
     interval_s: i64,

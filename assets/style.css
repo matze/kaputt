@@ -282,7 +282,13 @@ h2 {
   vector-effect: non-scaling-stroke;
 }
 .latency-dot { fill: var(--up); }
-.outage { fill: var(--down); }
+/* Long outages must not paint over the curve: only the start and end of the
+   outage get a red rule, the stretch between them stays empty. */
+.outage {
+  stroke: var(--down);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
 .no-data { fill: var(--gap); }
 .axis-label { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 .chart-key {
@@ -294,9 +300,13 @@ h2 {
 .chart-key-swatch {
   width: 8px;
   height: 8px;
-  background: var(--down);
+  border-left: 1.5px solid var(--down);
+  border-right: 1.5px solid var(--down);
 }
-.chart-key-swatch.no-data { background: var(--gap); }
+.chart-key-swatch.no-data {
+  border: 0;
+  background: var(--gap);
+}
 
 .rows {
   width: 100%;
