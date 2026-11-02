@@ -20,7 +20,7 @@ make sense.
 ## Commands
 
 ```sh
-cargo test                    # all tests are #[cfg(test)] module tests
+cargo nextest run             # all tests are #[cfg(test)] module tests
 cargo run -- serve            # web UI, scheduler and rollups (default command)
 cargo run -- probe --once     # one round of checks, print and store
 cargo run -- --config PATH probe --once
@@ -83,8 +83,8 @@ rustfmt and clippy settings apply.
 
 ## Verification
 
-`cargo test` covers config parsing, rollups, incidents, feed batching and view
-rendering. For a smoke test, run `cargo run -- probe --once` against real
+`cargo nextest run` covers config parsing, rollups, incidents, feed batching and
+view rendering. For a smoke test, run `cargo run -- probe --once` against real
 targets. Non-zero exit means at least one target is down. Then run
 `cargo run -- serve` and check `curl -s localhost:8080/healthz`,
 `curl -s localhost:8080/` and `curl -s localhost:8080/feed.xml`. `kaputt.db` is
