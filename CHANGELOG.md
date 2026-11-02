@@ -8,6 +8,10 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking**: drop the command line probing.
+
 ## [0.6.0]
 
 ### Changed
