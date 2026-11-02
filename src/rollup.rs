@@ -13,8 +13,6 @@
 
 use std::time::Duration;
 
-use tokio::task::JoinHandle;
-
 use crate::day;
 use crate::db::{self, DailyStat, Store};
 
@@ -134,21 +132,21 @@ pub async fn pass(store: &Store, now: i64) -> anyhow::Result<Report> {
 
 /// Run [`pass`] right away and then every [`PASS_INTERVAL`]. A single loop for
 /// the whole process: probing and rolling up stay independent of each other.
-pub fn spawn(store: Store) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match pass(&store, db::unix_now()).await {
-                Ok(report) => tracing::debug!(
-                    days = report.days,
-                    pruned_checks = report.pruned_checks,
-                    pruned_days = report.pruned_days,
-                    "rollup pass"
-                ),
-                Err(err) => tracing::warn!(%err, "rollup pass failed"),
-            }
-            tokio::time::sleep(PASS_INTERVAL).await;
+/// The future never completes on its own; the caller cancels it with the rest
+/// of the tree.
+pub async fn run(store: &Store) {
+    loop {
+        match pass(store, db::unix_now()).await {
+            Ok(report) => tracing::debug!(
+                days = report.days,
+                pruned_checks = report.pruned_checks,
+                pruned_days = report.pruned_days,
+                "rollup pass"
+            ),
+            Err(err) => tracing::warn!(%err, "rollup pass failed"),
         }
-    })
+        tokio::time::sleep(PASS_INTERVAL).await;
+    }
 }
 
 #[cfg(test)]

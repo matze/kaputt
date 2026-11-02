@@ -1,5 +1,6 @@
 use super::*;
 use crate::probe::ErrorKind;
+use futures_concurrency::future::Race;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -271,4 +272,51 @@ fn jitter_keeps_short_intervals_positive() {
         assert!(sample >= Duration::from_millis(900), "{sample:?}");
         assert!(sample <= Duration::from_millis(1100), "{sample:?}");
     }
+}
+
+/// The server polls [`run`] inside its future tree: the first round must
+/// record a check without a spawned task, and the future must stay pending so
+/// the process keeps probing.
+#[tokio::test]
+async fn the_run_loop_probes_and_records_checks() {
+    let fixture = fixture().await;
+    let app = axum::Router::new().route("/ok", axum::routing::get(|| async { "ok" }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind stub");
+    let addr = listener.local_addr().expect("stub addr");
+    let serve = async move {
+        axum::serve(listener, app).await.expect("stub server");
+    };
+
+    let mut target = fixture.target.clone();
+    target.url = format!("http://{addr}/ok");
+    let targets = vec![target];
+    let prober = Prober::new().expect("prober");
+
+    let probes = super::run(&targets, &fixture.store, &prober);
+    let recorded = async {
+        loop {
+            let history = fixture
+                .store
+                .history_since("opac", 0)
+                .await
+                .expect("history");
+            if !history.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), (serve, probes, recorded).race())
+        .await
+        .expect("probe loop records a check");
+
+    let history = fixture
+        .store
+        .history_since("opac", 0)
+        .await
+        .expect("history");
+    assert_eq!(history.len(), 1);
+    assert!(history[0].1);
 }

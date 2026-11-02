@@ -50,6 +50,8 @@ fn parse_args(args: &[String]) -> anyhow::Result<(PathBuf, Command)> {
                 config_path = PathBuf::from(value);
             }
             "-h" | "--help" => return Ok((config_path, Command::Help)),
+            // `serve` is the default command; accept it as `usage()` documents.
+            "serve" => {}
             other => bail!("unknown argument {other:?}\n{}", usage()),
         }
         index += 1;

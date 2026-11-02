@@ -6,12 +6,11 @@
 //! therefore resumes exactly where the last stored check left off, and an
 //! incident cannot be duplicated by it.
 
-use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use tokio::task::JoinHandle;
+use futures_concurrency::future::Join;
 
-use crate::config::{Config, TargetConfig};
+use crate::config::TargetConfig;
 use crate::db::{self, RunHead, Store, TargetHistory};
 use crate::probe::{Outcome, Prober};
 
@@ -229,38 +228,27 @@ pub async fn check_once(
     Ok(outcome)
 }
 
-/// Start one loop per enabled target: probe immediately, then every
-/// `interval_s` with jitter. The scheduler does not hold state, so a target
-/// that fails for a while keeps counting across restarts.
-pub fn spawn(config: &Config, store: &Store) -> anyhow::Result<Vec<JoinHandle<()>>> {
-    let targets: Vec<TargetConfig> = config
-        .targets
+/// One loop per enabled target: probe immediately, then every `interval_s`
+/// with jitter. The caller supplies the [`Prober`] so building the HTTP client
+/// stays a startup error, and joins this future with the endless rollup loop
+/// so the process keeps serving even without targets. Dropping the future
+/// cancels every loop.
+pub async fn run(targets: &[TargetConfig], store: &Store, prober: &Prober) {
+    let probes = targets
         .iter()
         .filter(|target| target.enabled)
-        .cloned()
-        .collect();
-    if targets.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let prober = Arc::new(Prober::new()?);
-    let store = store.clone();
-    Ok(targets
-        .into_iter()
-        .map(|target| {
-            let store = store.clone();
-            let prober = Arc::clone(&prober);
-            tokio::spawn(async move {
-                let mut jitter = Jitter::seeded(&target.id);
-                loop {
-                    if let Err(err) = check_once(&store, &prober, &target).await {
-                        tracing::warn!(target = %target.id, %err, "check could not be recorded");
-                    }
-                    tokio::time::sleep(jitter.interval(target.interval_s)).await;
+        .map(|target| async move {
+            let mut jitter = Jitter::seeded(&target.id);
+            loop {
+                if let Err(err) = check_once(store, prober, target).await {
+                    tracing::warn!(target = %target.id, %err, "check could not be recorded");
                 }
-            })
-        })
-        .collect())
+                tokio::time::sleep(jitter.interval(target.interval_s)).await;
+            }
+        });
+    // An empty set is fine: the caller still joins this against the endless
+    // rollup loop, so the process keeps serving without probes.
+    let _: Vec<()> = probes.collect::<Vec<_>>().join().await;
 }
 
 /// Small xorshift PRNG used only to spread probe times; not security relevant.

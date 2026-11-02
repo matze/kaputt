@@ -2,6 +2,7 @@ use super::*;
 use crate::config::TargetConfig;
 use crate::probe::{ErrorKind, Outcome};
 use crate::views;
+use futures_concurrency::future::Race;
 use jiff::civil::Date;
 use std::path::PathBuf;
 use tempfile::TempDir;
@@ -288,4 +289,57 @@ fn checks_outside_the_day_are_ignored() {
     assert_eq!(stat.ok_checks, 1);
     assert_eq!(stat.down_seconds, 0);
     assert_eq!(stat.avg_latency_ms, Some(50));
+}
+
+/// The server runs [`run`] as one future in its tree. It must write the row
+/// the bars read before it ever returns, so poll it until the row appears and
+/// then cancel it.
+#[tokio::test]
+async fn the_run_loop_refreshes_the_graph() {
+    let fixture = fixture().await;
+    let now = db::unix_now();
+    fixture
+        .store
+        .insert_check("opac", now, &up())
+        .await
+        .expect("insert check");
+
+    let today = day::key(day::date_of(now));
+    let writer = run(&fixture.store);
+    let populated = async {
+        loop {
+            let rows = fixture
+                .store
+                .daily_stats("opac", &today)
+                .await
+                .expect("stats");
+            if !rows.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(5), (writer, populated).race())
+        .await
+        .expect("rollup loop writes today's row");
+
+    let rows = fixture
+        .store
+        .daily_stats("opac", &today)
+        .await
+        .expect("stats");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].checks, 1);
+
+    let grid = views::day_grid(now);
+    let stats = views::day_stats(&rows, &grid);
+    let state = fixture
+        .store
+        .target("opac")
+        .await
+        .expect("target")
+        .expect("present");
+    let card = views::card(&state, &stats, &grid, now);
+    assert_eq!(card.bars.last().expect("today").tone, "ok");
+    assert_eq!(card.uptime, "100 %");
 }

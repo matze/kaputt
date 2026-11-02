@@ -26,6 +26,18 @@ fn unknown_and_missing_arguments_are_rejected() {
 }
 
 #[test]
+fn serve_is_accepted_as_documented() {
+    let (path, command) = parse_args(&args(&["serve"])).expect("serve");
+    assert_eq!(path, PathBuf::from("config.toml"));
+    assert_eq!(command, Command::Serve);
+
+    let (path, command) =
+        parse_args(&args(&["--config", "/etc/kaputt.toml", "serve"])).expect("serve with config");
+    assert_eq!(path, PathBuf::from("/etc/kaputt.toml"));
+    assert_eq!(command, Command::Serve);
+}
+
+#[test]
 fn help_wins() {
     let (_, command) = parse_args(&args(&["--help"])).expect("help");
     assert_eq!(command, Command::Help);

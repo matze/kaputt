@@ -3,6 +3,8 @@ use axum::Router;
 use axum::response::Redirect;
 use axum::routing::get;
 
+use futures_concurrency::future::Race;
+
 fn target(url: String, expect_status: u16) -> TargetConfig {
     TargetConfig {
         id: "stub".into(),
@@ -18,7 +20,9 @@ fn target(url: String, expect_status: u16) -> TargetConfig {
     }
 }
 
-async fn spawn_stub() -> String {
+/// Serve the stub routes and probe one of them concurrently. The server future
+/// never completes, so racing it against the probe also cancels it on return.
+async fn probe_stub(path: &str, expect_status: u16, timeout_s: Option<u32>) -> Outcome {
     let app = Router::new()
         .route("/ok", get(|| async { "ok" }))
         .route(
@@ -40,17 +44,29 @@ async fn spawn_stub() -> String {
         .await
         .expect("bind stub");
     let addr = listener.local_addr().expect("stub addr");
-    tokio::spawn(async move {
+    let url = format!("http://{addr}/{path}");
+
+    let serve = async move {
         axum::serve(listener, app).await.expect("stub server");
-    });
-    format!("http://{addr}")
+        anyhow::bail!("stub server stopped")
+    };
+    let probe = async move {
+        let mut target = target(url, expect_status);
+        if let Some(timeout_s) = timeout_s {
+            target.timeout_s = timeout_s;
+        }
+        Ok(Prober::new().expect("prober").probe(&target).await)
+    };
+
+    (serve, probe)
+        .race()
+        .await
+        .expect("probe finished before the stub server")
 }
 
 #[tokio::test]
 async fn ok_status_is_a_success() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let outcome = prober.probe(&target(format!("{base}/ok"), 200)).await;
+    let outcome = probe_stub("ok", 200, None).await;
     assert!(outcome.ok, "{outcome:?}");
     assert_eq!(outcome.status_code, Some(200));
     assert!(outcome.latency_ms.is_some());
@@ -59,18 +75,14 @@ async fn ok_status_is_a_success() {
 
 #[tokio::test]
 async fn expected_status_can_be_non_200() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let outcome = prober.probe(&target(format!("{base}/error"), 503)).await;
+    let outcome = probe_stub("error", 503, None).await;
     assert!(outcome.ok, "{outcome:?}");
     assert_eq!(outcome.status_code, Some(503));
 }
 
 #[tokio::test]
 async fn wrong_status_is_classified_as_status() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let outcome = prober.probe(&target(format!("{base}/error"), 200)).await;
+    let outcome = probe_stub("error", 200, None).await;
     assert!(!outcome.ok);
     assert_eq!(outcome.status_code, Some(503));
     assert_eq!(outcome.error_kind, Some(ErrorKind::Status));
@@ -81,18 +93,14 @@ async fn wrong_status_is_classified_as_status() {
 
 #[tokio::test]
 async fn redirects_are_followed_to_the_final_status() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let outcome = prober.probe(&target(format!("{base}/r1"), 200)).await;
+    let outcome = probe_stub("r1", 200, None).await;
     assert!(outcome.ok, "{outcome:?}");
     assert_eq!(outcome.status_code, Some(200));
 }
 
 #[tokio::test]
 async fn redirect_loops_are_cut_off() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let outcome = prober.probe(&target(format!("{base}/loop"), 200)).await;
+    let outcome = probe_stub("loop", 200, None).await;
     assert!(!outcome.ok);
     assert_eq!(outcome.error_kind, Some(ErrorKind::TooManyRedirects));
     assert_eq!(outcome.status_code, None);
@@ -100,12 +108,8 @@ async fn redirect_loops_are_cut_off() {
 
 #[tokio::test]
 async fn timeouts_are_classified_as_timeout() {
-    let base = spawn_stub().await;
-    let prober = Prober::new().expect("prober");
-    let mut slow = target(format!("{base}/slow"), 200);
-    slow.timeout_s = 1;
     let started = Instant::now();
-    let outcome = prober.probe(&slow).await;
+    let outcome = probe_stub("slow", 200, Some(1)).await;
     assert!(!outcome.ok);
     assert_eq!(outcome.error_kind, Some(ErrorKind::Timeout));
     assert!(started.elapsed() < Duration::from_secs(5));

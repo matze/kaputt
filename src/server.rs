@@ -4,6 +4,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use anyhow::Context;
 use askama::Template;
@@ -14,12 +15,14 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use futures_concurrency::future::{Join, Race};
 use serde::Deserialize;
 use tower_http::compression::CompressionLayer;
 use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
 
 use crate::config::Config;
 use crate::db::{self, Store, TargetState};
+use crate::probe::Prober;
 use crate::rollup;
 use crate::scheduler;
 use crate::views;
@@ -38,7 +41,7 @@ const FEED_CACHE: &str = "public, max-age=60";
 #[derive(Clone)]
 struct App {
     store: Store,
-    base_url: String,
+    base_url: Arc<str>,
 }
 
 /// Brotli when the client offers it, gzip otherwise. Small responses gain
@@ -55,17 +58,23 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         .await
         .with_context(|| format!("cannot listen on {}", config.listen))?;
 
-    let tasks = scheduler::spawn(&config, &store)?;
+    let prober = Prober::new()?;
+    let schedule = scheduler::run(&config.targets, &store, &prober);
 
-    if tasks.is_empty() {
-        tracing::warn!("no enabled targets; the status page would stay empty");
+    let num_targets = config
+        .targets
+        .iter()
+        .filter(|target| target.enabled)
+        .count();
+
+    if num_targets == 0 {
+        tracing::warn!("no enabled targets");
     } else {
-        tracing::info!(targets = tasks.len(), "scheduler started");
+        tracing::info!(targets = num_targets, "scheduler started");
     }
 
     // The rollup loop keeps the day bars, the uptime windows and retention up
     // to date; the first pass already ran before the listener was bound.
-    let _rollup = rollup::spawn(store.clone());
     tracing::info!(listen = %config.listen, "serving");
 
     let pages = Router::new()
@@ -86,8 +95,8 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         .route("/assets/htmx.min.js", get(htmx_js));
 
     let state = App {
-        store,
-        base_url: config.base_url,
+        store: store.clone(),
+        base_url: Arc::from(config.base_url),
     };
 
     let app = pages
@@ -96,9 +105,14 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         .layer(compression())
         .with_state(state);
 
-    axum::serve(listener, app).await.context("server failed")?;
+    let serve = async { axum::serve(listener, app).await.context("server failed") };
 
-    Ok(())
+    let background = async {
+        (schedule, rollup::run(&store)).join().await;
+        Ok(())
+    };
+
+    (serve, background).race().await
 }
 
 /// Everything a request can fail with, mapped to a plain-text response.
