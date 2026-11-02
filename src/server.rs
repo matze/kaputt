@@ -42,19 +42,12 @@ struct App {
 }
 
 /// Brotli when the client offers it, gzip otherwise. Small responses gain
-/// nothing, and `woff2` is already compressed; the other exclusions match
-/// tower-http's defaults.
+/// nothing, and `woff2` is already compressed.
 fn compression() -> CompressionLayer<impl Predicate> {
     CompressionLayer::new()
         .br(true)
         .gzip(true)
-        .compress_when(
-            SizeAbove::new(256)
-                .and(NotForContentType::GRPC)
-                .and(NotForContentType::IMAGES)
-                .and(NotForContentType::SSE)
-                .and(NotForContentType::const_new("font/woff2")),
-        )
+        .compress_when(SizeAbove::new(256).and(NotForContentType::const_new("font/woff2")))
 }
 
 pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
