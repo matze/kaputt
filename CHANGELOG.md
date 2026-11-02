@@ -8,7 +8,9 @@ and this project adheres to
 
 ## [Unreleased]
 
-### Added
+## [0.6.0]
+
+### Changed
 
 - Compress HTML pages, the HTMX status partial, RSS feeds and embedded text
   assets with Brotli or gzip.
