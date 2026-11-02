@@ -8,6 +8,11 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- Pages and feeds show only the German cause label, not the raw probe error
+  detail.
+
 ## [0.7.0]
 
 ### Changed

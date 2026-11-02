@@ -75,7 +75,7 @@
     <tr>
       <td>{{ incident.when }}</td>
       <td class="num">{{ incident.span }}</td>
-      <td>{{ incident.cause }}{% match incident.detail %}{% when Some with (detail) %} – {{ detail }}{% when None %}{% endmatch %}</td>
+      <td>{{ incident.cause }}</td>
     </tr>
     {% endfor %}
   </tbody>

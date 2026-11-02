@@ -341,7 +341,6 @@ pub struct CheckSummary {
     pub status_code: Option<u16>,
     pub latency_ms: Option<i64>,
     pub error_kind: Option<String>,
-    pub error_detail: Option<String>,
 }
 
 /// One `incidents` row; `ended_at` is `None` while the incident runs.
@@ -350,7 +349,6 @@ pub struct IncidentSummary {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub cause: String,
-    pub detail: Option<String>,
 }
 
 /// One incident with the identity a feed item needs: the row id for a stable
@@ -363,7 +361,6 @@ pub struct FeedIncident {
     pub started_at: i64,
     pub ended_at: Option<i64>,
     pub cause: String,
-    pub detail: Option<String>,
 }
 
 /// A target plus what the pages need from its history: newest check, newest
@@ -426,9 +423,9 @@ impl Store {
             .call(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT t.id, t.name, t.url, t.expect_status, t.interval_s,
-                            c.ts, c.ok, c.status_code, c.latency_ms, c.error_kind, c.error_detail,
+                            c.ts, c.ok, c.status_code, c.latency_ms, c.error_kind,
                             (SELECT max(ts) FROM checks WHERE target_id = t.id AND ok = 1),
-                            i.id, i.started_at, i.cause, i.detail
+                            i.id, i.started_at, i.cause
                      FROM targets t
                      LEFT JOIN checks c ON c.id =
                          (SELECT max(id) FROM checks WHERE target_id = t.id)
@@ -448,17 +445,15 @@ impl Store {
                                 status_code: row.get::<_, Option<i64>>(7)?.map(|c| c as u16),
                                 latency_ms: row.get::<_, Option<i64>>(8)?,
                                 error_kind: row.get(9)?,
-                                error_detail: row.get(10)?,
                             }),
                             None => None,
                         };
-                        let last_ok_ts = row.get::<_, Option<i64>>(11)?;
-                        let open_incident = match row.get::<_, Option<i64>>(12)? {
+                        let last_ok_ts = row.get::<_, Option<i64>>(10)?;
+                        let open_incident = match row.get::<_, Option<i64>>(11)? {
                             Some(_) => Some(IncidentSummary {
-                                started_at: row.get::<_, i64>(13)?,
+                                started_at: row.get::<_, i64>(12)?,
                                 ended_at: None,
-                                cause: row.get::<_, String>(14)?,
-                                detail: row.get(15)?,
+                                cause: row.get::<_, String>(13)?,
                             }),
                             None => None,
                         };
@@ -541,7 +536,7 @@ impl Store {
         self.conn
             .call(move |conn| {
                 let mut stmt = conn.prepare(
-                    "SELECT started_at, ended_at, cause, detail FROM incidents
+                    "SELECT started_at, ended_at, cause FROM incidents
                      WHERE target_id = ?1 ORDER BY started_at DESC, id DESC LIMIT ?2",
                 )?;
                 let rows = stmt
@@ -550,7 +545,6 @@ impl Store {
                             started_at: row.get(0)?,
                             ended_at: row.get(1)?,
                             cause: row.get(2)?,
-                            detail: row.get(3)?,
                         })
                     })?
                     .collect::<Result<Vec<_>, _>>()?;
@@ -574,7 +568,7 @@ impl Store {
             .call(move |conn| {
                 let mut stmt = conn.prepare(
                     "SELECT i.id, i.target_id, t.name, i.started_at, i.ended_at,
-                            i.cause, i.detail
+                            i.cause
                      FROM incidents i JOIN targets t ON t.id = i.target_id
                      WHERE (?1 IS NULL OR i.target_id = ?1)
                        AND (i.ended_at IS NULL OR i.ended_at >= ?2)
@@ -592,7 +586,6 @@ impl Store {
                                 started_at: row.get(3)?,
                                 ended_at: row.get(4)?,
                                 cause: row.get(5)?,
-                                detail: row.get(6)?,
                             })
                         },
                     )?

@@ -29,8 +29,6 @@ pub const FEED_BATCH_GAP_S: i64 = 6 * 3600;
 pub const FEED_WINDOW_DAYS: i64 = 30;
 /// Hard cap on items in one feed, newest first.
 pub const FEED_MAX_ITEMS: usize = 50;
-/// Remote error details are untrusted and can be long; feeds stay small.
-const FEED_DETAIL_MAX: usize = 300;
 /// Horizontal buckets of the latency chart. Raw checks arrive every few
 /// minutes, so one bucket per sample would draw a dense, jagged line in the
 /// short window and tens of thousands of points in the long one. Averaging
@@ -180,32 +178,10 @@ pub fn cause_de(kind: &str) -> &'static str {
     }
 }
 
-/// The stored detail is the whole reqwest source chain, generic layers
-/// included ("error sending request for url …: client error (Connect): …").
-/// Only the last step says anything, so that is what the page shows.
-fn detail_tail(detail: &str) -> &str {
-    detail.rsplit(": ").next().unwrap_or(detail).trim()
-}
-
-/// The part of the detail that adds something beyond the kind label.
-fn detail_extra(kind: &str, detail: Option<&str>) -> Option<String> {
-    let tail = detail.map(detail_tail).unwrap_or("");
-    if tail.is_empty() || tail.to_ascii_lowercase().contains("timed out") {
-        // "operation timed out" only repeats what the label already says.
-        return None;
-    }
-    if tail.eq_ignore_ascii_case(cause_de(kind)) {
-        return None;
-    }
-    Some(tail.to_string())
-}
-
-/// "Zeitüberschreitung", "Falscher Status: HTTP 503, erwartet 200".
-fn error_note(kind: &str, detail: Option<&str>) -> String {
-    match detail_extra(kind, detail) {
-        Some(tail) => format!("{}: {tail}", cause_de(kind)),
-        None => cause_de(kind).to_string(),
-    }
+/// The German label for the stored error kind. Raw remote error text is not
+/// shown: it is untrusted, can be long, and the kind already says what broke.
+fn error_note(kind: &str) -> String {
+    cause_de(kind).to_string()
 }
 
 fn latency(ms: Option<i64>) -> String {
@@ -311,7 +287,7 @@ pub struct TargetCard {
     pub tone: &'static str,
     /// Uptime of the 90-day window shown by the bars.
     pub uptime: String,
-    /// Failure detail, when there is one (detail page).
+    /// Failure cause, when the target is failing (detail page).
     pub note: Option<String>,
     /// Everything the row knows, for the hover popup.
     pub hover: String,
@@ -320,10 +296,7 @@ pub struct TargetCard {
 }
 
 fn check_error(check: &CheckSummary) -> String {
-    error_note(
-        check.error_kind.as_deref().unwrap_or("other"),
-        check.error_detail.as_deref(),
-    )
+    error_note(check.error_kind.as_deref().unwrap_or("other"))
 }
 
 /// One row of the overview, and the head of the detail page. The bars, the
@@ -339,11 +312,7 @@ pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) ->
             if let Some(ok_ts) = state.last_ok_ts {
                 meta.push_str(&format!(" · zuletzt erreichbar {}", rel_short(now, ok_ts)));
             }
-            (
-                "down",
-                meta,
-                Some(error_note(&incident.cause, incident.detail.as_deref())),
-            )
+            ("down", meta, Some(error_note(&incident.cause)))
         }
         (None, Some(check)) if !check.ok => (
             "warn",
@@ -863,7 +832,6 @@ pub struct IncidentView {
     pub when: String,
     pub span: String,
     pub cause: String,
-    pub detail: Option<String>,
 }
 
 pub fn incident_view(incident: &IncidentSummary, now: i64) -> IncidentView {
@@ -875,7 +843,6 @@ pub fn incident_view(incident: &IncidentSummary, now: i64) -> IncidentView {
             None => format!("seit {}", span_short(now - incident.started_at)),
         },
         cause: cause_de(&incident.cause).to_string(),
-        detail: detail_extra(&incident.cause, incident.detail.as_deref()),
     }
 }
 
@@ -1009,15 +976,6 @@ impl<'a> Batch<'a> {
         }
         lines.push(format!("Ursachen: {}", causes.join(", ")));
 
-        if let Some(detail) = self
-            .incidents
-            .iter()
-            .filter_map(|incident| detail_extra(&incident.cause, incident.detail.as_deref()))
-            .next()
-        {
-            lines.push(format!("Details: {}", truncate_detail(&detail)));
-        }
-
         FeedItem {
             guid: format!("kaputt:v1:{}:{}", first.target_id, first.id),
             title,
@@ -1027,15 +985,6 @@ impl<'a> Batch<'a> {
             category: first.target_name.clone(),
         }
     }
-}
-
-fn truncate_detail(text: &str) -> String {
-    if text.chars().count() <= FEED_DETAIL_MAX {
-        return text.to_string();
-    }
-    let mut short: String = text.chars().take(FEED_DETAIL_MAX - 1).collect();
-    short.push('…');
-    short
 }
 
 /// Collapse incidents into feed items: mature batches only, newest first.

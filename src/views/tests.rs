@@ -32,7 +32,6 @@ fn feed_incident(id: i64, target: &str, start: i64, end: Option<i64>) -> FeedInc
         started_at: start,
         ended_at: end,
         cause: "timeout".into(),
-        detail: Some("operation timed out".into()),
     }
 }
 
@@ -81,30 +80,49 @@ fn duration_drops_zero_parts() {
 }
 
 #[test]
-fn error_text_keeps_only_the_specific_tail() {
+fn failure_notes_show_only_the_cause_label() {
+    let now = berlin(2026, 10, 30, 12);
+    let grid = day_grid(now);
+
+    let failed = TargetState {
+        id: "opac".into(),
+        name: "OPAC".into(),
+        url: "https://opac.example.org/".into(),
+        expect_status: 200,
+        interval_s: 300,
+        last_check: Some(CheckSummary {
+            ts: now - 30,
+            ok: false,
+            status_code: Some(503),
+            latency_ms: Some(120),
+            error_kind: Some("status".into()),
+        }),
+        last_ok_ts: Some(now - 600),
+        open_incident: None,
+    };
+    let failed_card = card(&failed, &day_stats(&[], &grid), &grid, now);
+    assert_eq!(failed_card.note.as_deref(), Some("Falscher Status"));
     assert_eq!(
-        error_note(
-            "connect",
-            Some(
-                "error sending request for url (http://127.0.0.1:8124/): \
-                     client error (Connect): tcp connect error: \
-                     Connection refused (os error 111)"
-            )
-        ),
-        "Keine Verbindung: Connection refused (os error 111)"
+        failed_card.hover,
+        "vor 30 s nicht geantwortet · Falscher Status"
     );
+
+    let down = TargetState {
+        open_incident: Some(IncidentSummary {
+            started_at: now - 600,
+            ended_at: None,
+            cause: "timeout".into(),
+        }),
+        last_check: None,
+        last_ok_ts: None,
+        ..failed
+    };
+    let card = card(&down, &day_stats(&[], &grid), &grid, now);
+    assert_eq!(card.note.as_deref(), Some("Zeitüberschreitung"));
     assert_eq!(
-        error_note(
-            "timeout",
-            Some("error sending request for url (http://x/): operation timed out")
-        ),
-        "Zeitüberschreitung"
+        card.hover,
+        "nicht erreichbar seit 10 Min · Zeitüberschreitung"
     );
-    assert_eq!(
-        error_note("status", Some("HTTP 503, erwartet 200")),
-        "Falscher Status: HTTP 503, erwartet 200"
-    );
-    assert_eq!(error_note("connect", None), "Keine Verbindung");
 }
 
 #[test]
@@ -232,7 +250,6 @@ fn card_reads_uptime_and_downtime_from_the_rollup() {
             status_code: Some(200),
             latency_ms: Some(120),
             error_kind: None,
-            error_detail: None,
         }),
         last_ok_ts: Some(now - 30),
         open_incident: None,
@@ -677,17 +694,14 @@ fn feed_page_builds_absolute_links() {
 }
 
 #[test]
-fn feed_xml_escapes_remote_text() {
+fn feed_xml_escapes_the_target_name() {
     let now = berlin(2026, 10, 30, 12);
     let mut incident = feed_incident(1, "a", now - 1200, None);
     incident.target_name = "Stadt <X> & Co".into();
     incident.cause = "status".into();
-    incident.detail = Some("<script>alert(1)</script>".into());
     let page = feed_page(None, &[incident], now);
     let xml = page.render().expect("feed renders");
     assert!(xml.contains("&#60;X&#62;"));
-    assert!(xml.contains("&#60;script&#62;"));
     assert!(!xml.contains("<X>"));
-    assert!(!xml.contains("<script>"));
     assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"utf-8\"?>"));
 }
