@@ -4,7 +4,6 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 
 use anyhow::Context;
 use askama::Template;
@@ -41,7 +40,6 @@ const FEED_CACHE: &str = "public, max-age=60";
 #[derive(Clone)]
 struct App {
     store: Store,
-    base_url: Arc<str>,
 }
 
 /// Brotli when the client offers it, gzip otherwise. Small responses gain
@@ -96,7 +94,6 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
 
     let state = App {
         store: store.clone(),
-        base_url: Arc::from(config.base_url),
     };
 
     let app = pages
@@ -176,7 +173,7 @@ async fn feed_all(State(app): State<App>, headers: HeaderMap) -> Result<Response
     let now = db::unix_now();
     let since = views::feed_since(now) - views::FEED_BATCH_GAP_S;
     let incidents = app.store.feed_incidents(None, since, true).await?;
-    let feed = views::feed_page(&app.base_url, None, &incidents, now);
+    let feed = views::feed_page(None, &incidents, now);
     Ok(feed_response(feed, &headers)?)
 }
 
@@ -192,7 +189,7 @@ async fn feed_target(
     };
     let since = views::feed_since(now) - views::FEED_BATCH_GAP_S;
     let incidents = app.store.feed_incidents(Some(&id), since, false).await?;
-    let feed = views::feed_page(&app.base_url, Some(&state), &incidents, now);
+    let feed = views::feed_page(Some(&state), &incidents, now);
     Ok(feed_response(feed, &headers)?)
 }
 

@@ -76,8 +76,8 @@ rustfmt and clippy settings apply.
   the window is 30 local days and the feed is capped at 50 items. The GUID is
   `kaputt:v1:<target>:<first incident id>` and later incidents update that item
   in place. Never emit per-check or per-recovery items, and never change the
-  incident thresholds or stored rows for the feed. Absolute links use
-  `base_url` from `config.toml`, not the request `Host`.
+  incident thresholds or stored rows for the feed. Absolute links use the
+  hardcoded origin `https://kaputt.matze.lol`, not the request `Host`.
 - Serve pages with `Cache-Control: no-store`. `/healthz` is liveness only: it
   queries no database and contacts no target.
 

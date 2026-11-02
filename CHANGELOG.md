@@ -11,6 +11,8 @@ and this project adheres to
 ### Changed
 
 - **Breaking**: drop the command line probing.
+- **Breaking**: drop the `base_url` config key. Feed links always use the public
+  origin `https://kaputt.matze.lol`.
 
 ## [0.6.0]
 

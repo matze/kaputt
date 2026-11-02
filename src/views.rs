@@ -16,6 +16,9 @@ use crate::db::{
 
 /// Bars on the overview: one per day, including today.
 pub const BAR_DAYS: i64 = 90;
+/// Public origin of the only deployment, used for absolute feed links. Every
+/// page is served under this host, so the request `Host` stays irrelevant.
+pub const BASE_URL: &str = "https://kaputt.matze.lol";
 /// Feeds publish incidents, not checks. A blip below this never reaches a
 /// subscriber; a still-running incident becomes feed-worthy at this age.
 pub const FEED_MIN_INCIDENT_S: i64 = 15 * 60;
@@ -942,7 +945,7 @@ impl<'a> Batch<'a> {
         })
     }
 
-    fn item(&self, base_url: &str) -> FeedItem {
+    fn item(&self) -> FeedItem {
         let first = self.incidents[0];
         let count = self.incidents.len();
         let open = self
@@ -1018,7 +1021,7 @@ impl<'a> Batch<'a> {
         FeedItem {
             guid: format!("kaputt:v1:{}:{}", first.target_id, first.id),
             title,
-            link: format!("{base_url}/t/{}#stoerungen", first.target_id),
+            link: format!("{BASE_URL}/t/{}#stoerungen", first.target_id),
             pub_date: day::rfc2822(first.started_at),
             description: lines.join("\n"),
             category: first.target_name.clone(),
@@ -1038,11 +1041,7 @@ fn truncate_detail(text: &str) -> String {
 /// Collapse incidents into feed items: mature batches only, newest first.
 /// Returns the items and the newest activity, which is the feed's
 /// `lastBuildDate`.
-pub fn feed_items(
-    base_url: &str,
-    incidents: &[FeedIncident],
-    now: i64,
-) -> (Vec<FeedItem>, Option<i64>) {
+pub fn feed_items(incidents: &[FeedIncident], now: i64) -> (Vec<FeedItem>, Option<i64>) {
     let mut incidents: Vec<&FeedIncident> = incidents.iter().collect();
     incidents.sort_by_key(|incident| {
         (
@@ -1068,7 +1067,7 @@ pub fn feed_items(
         .map(|batch| {
             let started_at = batch.started_at();
             let last_activity = batch.last_activity(now);
-            (started_at, last_activity, batch.item(base_url))
+            (started_at, last_activity, batch.item())
         })
         .collect();
     items.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
@@ -1092,14 +1091,9 @@ pub struct FeedPage {
 }
 
 /// Head and items of one feed. `target` selects the single-target feed; the
-/// absolute links come from the configured public origin.
-pub fn feed_page(
-    base_url: &str,
-    target: Option<&TargetState>,
-    incidents: &[FeedIncident],
-    now: i64,
-) -> FeedPage {
-    let base = base_url.trim_end_matches('/');
+/// absolute links use [`BASE_URL`].
+pub fn feed_page(target: Option<&TargetState>, incidents: &[FeedIncident], now: i64) -> FeedPage {
+    let base = BASE_URL;
     let (title, link, self_link) = match target {
         Some(target) => (
             format!("{} — kaputt.matze.lol", target.name),
@@ -1112,7 +1106,7 @@ pub fn feed_page(
             format!("{base}/feed.xml"),
         ),
     };
-    let (items, last_activity) = feed_items(base, incidents, now);
+    let (items, last_activity) = feed_items(incidents, now);
     FeedPage {
         title,
         link,

@@ -566,7 +566,7 @@ fn chart_ranges_round_trip_and_mark_the_active_link() {
 fn feed_drops_a_lone_blip() {
     let now = berlin(2026, 10, 30, 12);
     let incidents = [feed_incident(1, "a", now - 3600, Some(now - 3300))];
-    let (items, last) = feed_items("https://example.org", &incidents, now);
+    let (items, last) = feed_items(&incidents, now);
     assert!(items.is_empty());
     assert_eq!(last, None);
 }
@@ -575,10 +575,10 @@ fn feed_drops_a_lone_blip() {
 fn feed_publishes_an_open_incident_when_it_matures() {
     let now = berlin(2026, 10, 30, 12);
     let young = [feed_incident(1, "a", now - FEED_MIN_INCIDENT_S + 1, None)];
-    assert!(feed_items("https://example.org", &young, now).0.is_empty());
+    assert!(feed_items(&young, now).0.is_empty());
 
     let mature = [feed_incident(1, "a", now - FEED_MIN_INCIDENT_S, None)];
-    let (items, _) = feed_items("https://example.org", &mature, now);
+    let (items, _) = feed_items(&mature, now);
     assert_eq!(items.len(), 1);
     assert!(items[0].title.contains("Ausfall seit"));
     assert!(items[0].description.contains("Ende: andauernd"));
@@ -592,13 +592,13 @@ fn feed_batches_nearby_incidents_and_keeps_the_first_guid() {
         feed_incident(1, "a", now - 10_000, Some(now - 9_000)),
         feed_incident(2, "a", now - 8_000, Some(now - 7_000)),
     ];
-    let (items, _) = feed_items("https://example.org", &incidents, now);
+    let (items, _) = feed_items(&incidents, now);
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].guid, "kaputt:v1:a:1");
     assert_eq!(items[0].title, "A: 2 Ausfälle");
     assert!(items[0].description.contains("Ausfälle: 2"));
     assert!(items[0].description.contains("Behobene Dauer: 33 Min"));
-    assert_eq!(items[0].link, "https://example.org/t/a#stoerungen");
+    assert_eq!(items[0].link, "https://kaputt.matze.lol/t/a#stoerungen");
 }
 
 #[test]
@@ -608,7 +608,7 @@ fn feed_keeps_incidents_beyond_the_gap_apart() {
         feed_incident(1, "a", now - 100_000, Some(now - 90_000)),
         feed_incident(2, "a", now - 60_000, Some(now - 50_000)),
     ];
-    let (items, _) = feed_items("https://example.org", &incidents, now);
+    let (items, _) = feed_items(&incidents, now);
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].guid, "kaputt:v1:a:2");
     assert_eq!(items[1].guid, "kaputt:v1:a:1");
@@ -621,9 +621,9 @@ fn feed_never_batches_across_targets() {
         feed_incident(1, "a", now - 10_000, Some(now - 9_000)),
         feed_incident(2, "b", now - 8_500, Some(now - 7_500)),
     ];
-    let (items, _) = feed_items("https://example.org", &incidents, now);
+    let (items, _) = feed_items(&incidents, now);
     assert_eq!(items.len(), 2);
-    assert_eq!(items[0].link, "https://example.org/t/b#stoerungen");
+    assert_eq!(items[0].link, "https://kaputt.matze.lol/t/b#stoerungen");
 }
 
 #[test]
@@ -635,11 +635,7 @@ fn feed_hides_incidents_that_ended_before_the_window() {
         now - 40 * 86400,
         Some(now - 40 * 86400 + 3600),
     )];
-    assert!(
-        feed_items("https://example.org", &incidents, now)
-            .0
-            .is_empty()
-    );
+    assert!(feed_items(&incidents, now).0.is_empty());
 }
 
 #[test]
@@ -651,7 +647,7 @@ fn feed_caps_items_newest_first() {
             feed_incident(index, "a", start, Some(start + 1200))
         })
         .collect();
-    let (items, _) = feed_items("https://example.org", &incidents, now);
+    let (items, _) = feed_items(&incidents, now);
     assert_eq!(items.len(), FEED_MAX_ITEMS);
     assert_eq!(items[0].guid, "kaputt:v1:a:0");
 }
@@ -669,14 +665,14 @@ fn feed_page_builds_absolute_links() {
         last_ok_ts: None,
         open_incident: None,
     };
-    let all = feed_page("https://status.example.org/", None, &[], now);
-    assert_eq!(all.self_link, "https://status.example.org/feed.xml");
-    assert_eq!(all.link, "https://status.example.org/");
+    let all = feed_page(None, &[], now);
+    assert_eq!(all.self_link, "https://kaputt.matze.lol/feed.xml");
+    assert_eq!(all.link, "https://kaputt.matze.lol/");
     assert!(!all.last_build.is_empty());
 
-    let one = feed_page("https://status.example.org/", Some(&state), &[], now);
-    assert_eq!(one.self_link, "https://status.example.org/t/a/feed.xml");
-    assert_eq!(one.link, "https://status.example.org/t/a");
+    let one = feed_page(Some(&state), &[], now);
+    assert_eq!(one.self_link, "https://kaputt.matze.lol/t/a/feed.xml");
+    assert_eq!(one.link, "https://kaputt.matze.lol/t/a");
     assert_eq!(one.title, "A — kaputt.matze.lol");
 }
 
@@ -687,7 +683,7 @@ fn feed_xml_escapes_remote_text() {
     incident.target_name = "Stadt <X> & Co".into();
     incident.cause = "status".into();
     incident.detail = Some("<script>alert(1)</script>".into());
-    let page = feed_page("https://example.org", None, &[incident], now);
+    let page = feed_page(None, &[incident], now);
     let xml = page.render().expect("feed renders");
     assert!(xml.contains("&#60;X&#62;"));
     assert!(xml.contains("&#60;script&#62;"));

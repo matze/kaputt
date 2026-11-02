@@ -6,8 +6,6 @@
 
 listen = "127.0.0.1:8080"
 database = "kaputt.db"
-# Public origin for the absolute links in the RSS feeds.
-base_url = "https://kaputt.matze.lol"
 
 [[targets]]
 id = "karlsruhe"

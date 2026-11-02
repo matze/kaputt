@@ -11,7 +11,6 @@ use serde::Deserialize;
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 const DEFAULT_DATABASE: &str = "kaputt.db";
-const DEFAULT_BASE_URL: &str = "https://kaputt.matze.lol";
 const DEFAULT_EXPECT_STATUS: u16 = 200;
 const DEFAULT_INTERVAL_S: u32 = 300;
 const DEFAULT_TIMEOUT_S: u32 = 10;
@@ -24,9 +23,6 @@ pub struct Config {
     pub listen: String,
     #[serde(default = "default_database")]
     pub database: PathBuf,
-    /// Public origin used for absolute feed links, without a trailing slash.
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
     #[serde(default)]
     pub targets: Vec<TargetConfig>,
 }
@@ -69,25 +65,6 @@ impl Config {
         self.listen
             .parse::<SocketAddr>()
             .map_err(|e| format!("listen {:?}: {e}", self.listen))?;
-
-        let base = url::Url::parse(&self.base_url)
-            .map_err(|e| format!("base_url {:?}: {e}", self.base_url))?;
-        if !matches!(base.scheme(), "http" | "https") {
-            return Err(format!(
-                "base_url {:?}: scheme {:?} is not http or https",
-                self.base_url,
-                base.scheme()
-            ));
-        }
-        if base.host_str().is_none() {
-            return Err(format!("base_url {:?}: has no host", self.base_url));
-        }
-        if base.query().is_some() || base.fragment().is_some() {
-            return Err(format!(
-                "base_url {:?}: must not carry a query or fragment",
-                self.base_url
-            ));
-        }
 
         let mut seen = HashSet::new();
         for target in &self.targets {
@@ -155,10 +132,6 @@ fn default_listen() -> String {
 
 fn default_database() -> PathBuf {
     PathBuf::from(DEFAULT_DATABASE)
-}
-
-fn default_base_url() -> String {
-    DEFAULT_BASE_URL.to_string()
 }
 
 fn default_expect_status() -> u16 {

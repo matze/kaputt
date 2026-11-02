@@ -18,7 +18,6 @@ fn defaults_are_applied() {
     let config = parse(MINIMAL).expect("valid config");
     assert_eq!(config.listen, "127.0.0.1:8080");
     assert_eq!(config.database, PathBuf::from("kaputt.db"));
-    assert_eq!(config.base_url, "https://kaputt.matze.lol");
     let target = &config.targets[0];
     assert_eq!(target.expect_status, 200);
     assert_eq!(target.interval_s, 300);
@@ -35,7 +34,6 @@ fn explicit_values_win_over_defaults() {
         r#"
             listen = "0.0.0.0:9000"
             database = "/var/lib/kaputt/kaputt.db"
-            base_url = "https://status.example.org"
 
             [[targets]]
             id = "opac"
@@ -53,7 +51,6 @@ fn explicit_values_win_over_defaults() {
     .expect("valid config");
     assert_eq!(config.listen, "0.0.0.0:9000");
     assert_eq!(config.database, PathBuf::from("/var/lib/kaputt/kaputt.db"));
-    assert_eq!(config.base_url, "https://status.example.org");
     let target = &config.targets[0];
     assert_eq!(target.expect_status, 404);
     assert_eq!(target.interval_s, 60);
@@ -151,19 +148,6 @@ fn zero_interval_and_timeout_are_rejected() {
         ))
         .expect_err(body);
         assert!(!err.is_empty(), "{body}");
-    }
-}
-
-#[test]
-fn bad_base_urls_are_rejected() {
-    for raw in [
-        "base_url = \"ftp://example.org\"",
-        "base_url = \"not a url\"",
-        "base_url = \"https://example.org/?q=1\"",
-        "base_url = \"https://example.org/#x\"",
-    ] {
-        let err = parse(&format!("{raw}\n{MINIMAL}\n")).expect_err(raw);
-        assert!(err.contains("base_url"), "{raw}: {err}");
     }
 }
 
