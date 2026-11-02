@@ -20,7 +20,7 @@ make sense.
 ## Commands
 
 ```sh
-cargo test                    # all tests are inline #[cfg(test)] module tests
+cargo test                    # all tests are #[cfg(test)] module tests
 cargo run -- serve            # web UI, scheduler and rollups (default command)
 cargo run -- probe --once     # one round of checks, print and store
 cargo run -- --config PATH probe --once
@@ -42,6 +42,7 @@ rustfmt and clippy settings apply.
 | `src/views.rs` | aggregation, German formatting, view structs, RSS batching |
 | `src/day.rs` | Europe/Berlin local days and timestamps |
 | `src/server.rs` | axum routes and embedded assets |
+| `src/<module>/tests.rs` | unit tests of `src/<module>.rs`, declared as `#[cfg(test)] mod tests;` |
 | `templates/`, `assets/` | askama templates, CSS, vendored htmx, Geist woff2 |
 
 ## Rules
