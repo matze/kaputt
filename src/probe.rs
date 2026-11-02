@@ -153,38 +153,39 @@ fn classify(err: &reqwest::Error) -> (ErrorKind, String) {
         ErrorKind::Timeout
     } else if err.is_redirect() {
         ErrorKind::TooManyRedirects
-    } else if err.is_connect() {
-        classify_connect(&lower)
-    } else if has_marker(&lower, TLS_MARKERS) {
-        ErrorKind::Tls
     } else {
-        ErrorKind::Other
+        classify_transport(&lower, err.is_connect())
     };
 
     (kind, joined)
 }
 
-const DNS_MARKERS: &[&str] = &[
-    "dns error",
-    "failed to lookup address",
-    "name or service not known",
-];
-const TLS_MARKERS: &[&str] = &[
-    "tls",
-    "ssl",
-    "certificate",
-    "handshake",
-    "unknownissuer",
-    "notvalidforname",
-];
+/// DNS and TLS failures surface as connect errors, but a TLS error outside the
+/// connect phase still has to be recognised.
+fn classify_transport(lower: &str, is_connect: bool) -> ErrorKind {
+    const DNS_MARKERS: &[&str] = &[
+        "dns error",
+        "failed to lookup address",
+        "name or service not known",
+    ];
 
-fn classify_connect(lower: &str) -> ErrorKind {
-    if has_marker(lower, DNS_MARKERS) {
+    const TLS_MARKERS: &[&str] = &[
+        "tls",
+        "ssl",
+        "certificate",
+        "handshake",
+        "unknownissuer",
+        "notvalidforname",
+    ];
+
+    if is_connect && has_marker(lower, DNS_MARKERS) {
         ErrorKind::Dns
     } else if has_marker(lower, TLS_MARKERS) {
         ErrorKind::Tls
-    } else {
+    } else if is_connect {
         ErrorKind::Connect
+    } else {
+        ErrorKind::Other
     }
 }
 
@@ -341,14 +342,16 @@ mod tests {
     #[test]
     fn dns_failures_are_recognised() {
         assert_eq!(
-            classify_connect(
-                "dns error: failed to lookup address information: Name or service not known"
+            classify_transport(
+                "dns error: failed to lookup address information: Name or service not known",
+                true
             ),
             ErrorKind::Dns
         );
         assert_eq!(
-            classify_connect(
-                "failed to lookup address information: temporary failure in name resolution"
+            classify_transport(
+                "failed to lookup address information: temporary failure in name resolution",
+                true
             ),
             ErrorKind::Dns
         );
@@ -357,16 +360,24 @@ mod tests {
     #[test]
     fn tls_failures_are_recognised() {
         assert_eq!(
-            classify_connect("invalid peer certificate: UnknownIssuer"),
+            classify_transport("invalid peer certificate: UnknownIssuer", true),
             ErrorKind::Tls
         );
         assert_eq!(
-            classify_connect("tls handshake failed: certificate expired"),
+            classify_transport("tls handshake failed: certificate expired", true),
             ErrorKind::Tls
         );
         assert_eq!(
-            classify_connect("connection refused (os error 111)"),
+            classify_transport("connection refused (os error 111)", true),
             ErrorKind::Connect
+        );
+        assert_eq!(
+            classify_transport("tls error after connect", false),
+            ErrorKind::Tls
+        );
+        assert_eq!(
+            classify_transport("connection reset", false),
+            ErrorKind::Other
         );
     }
 
