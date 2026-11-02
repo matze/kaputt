@@ -15,6 +15,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use serde::Deserialize;
+use tower_http::compression::CompressionLayer;
+use tower_http::compression::predicate::{NotForContentType, Predicate, SizeAbove};
 
 use crate::config::Config;
 use crate::db::{self, Store, TargetState};
@@ -37,6 +39,22 @@ const FEED_CACHE: &str = "public, max-age=60";
 struct App {
     store: Store,
     base_url: String,
+}
+
+/// Brotli when the client offers it, gzip otherwise. Small responses gain
+/// nothing, and `woff2` is already compressed; the other exclusions match
+/// tower-http's defaults.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .br(true)
+        .gzip(true)
+        .compress_when(
+            SizeAbove::new(256)
+                .and(NotForContentType::GRPC)
+                .and(NotForContentType::IMAGES)
+                .and(NotForContentType::SSE)
+                .and(NotForContentType::const_new("font/woff2")),
+        )
 }
 
 pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
@@ -79,7 +97,11 @@ pub async fn run(config: Config, store: Store) -> anyhow::Result<()> {
         base_url: config.base_url,
     };
 
-    let app = pages.merge(feeds).merge(assets).with_state(state);
+    let app = pages
+        .merge(feeds)
+        .merge(assets)
+        .layer(compression())
+        .with_state(state);
 
     axum::serve(listener, app).await.context("server failed")?;
 
@@ -180,6 +202,9 @@ fn feed_response(feed: views::FeedPage, headers: &HeaderMap) -> anyhow::Result<R
             [
                 (header::CACHE_CONTROL, FEED_CACHE.to_string()),
                 (header::ETAG, etag),
+                // A 304 must repeat the Vary of the 200 it stands in for; the
+                // compression layer skips the header on an empty body.
+                (header::VARY, "accept-encoding".to_string()),
             ],
         )
             .into_response());
