@@ -11,15 +11,11 @@ use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp};
 
-static TZ: LazyLock<TimeZone> =
+pub static TZ: LazyLock<TimeZone> =
     LazyLock::new(|| TimeZone::get("Europe/Berlin").unwrap_or(TimeZone::UTC));
 
-pub fn tz() -> &'static TimeZone {
-    &TZ
-}
-
 pub fn at(ts: i64) -> jiff::civil::DateTime {
-    tz().to_datetime(Timestamp::from_second(ts).unwrap_or(Timestamp::UNIX_EPOCH))
+    TZ.to_datetime(Timestamp::from_second(ts).unwrap_or(Timestamp::UNIX_EPOCH))
 }
 
 /// The local day a timestamp falls into.
@@ -29,7 +25,7 @@ pub fn date_of(ts: i64) -> Date {
 
 /// Unix second that starts `date` in local time.
 pub fn midnight(date: Date) -> i64 {
-    tz().to_zoned(date.at(0, 0, 0, 0))
+    TZ.to_zoned(date.at(0, 0, 0, 0))
         .map(|zoned| zoned.timestamp().as_second())
         .unwrap_or(0)
 }
@@ -53,7 +49,7 @@ pub fn bounds(date: Date) -> (i64, i64) {
 /// the day actually has (DST-aware).
 pub fn rfc2822(ts: i64) -> String {
     let timestamp = Timestamp::from_second(ts).unwrap_or(Timestamp::UNIX_EPOCH);
-    let zoned = timestamp.to_zoned(tz().clone());
+    let zoned = timestamp.to_zoned(TZ.clone());
     jiff::fmt::rfc2822::to_string(&zoned).unwrap_or_default()
 }
 

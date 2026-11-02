@@ -1,7 +1,7 @@
 use super::*;
 
 fn berlin(y: i16, m: i8, d: i8, hour: i8) -> i64 {
-    day::tz()
+    day::TZ
         .to_zoned(Date::new(y, m, d).unwrap().at(hour, 0, 0, 0))
         .expect("Berlin time")
         .timestamp()
