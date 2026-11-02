@@ -131,11 +131,9 @@ impl Prober {
 /// aws-lc build), so the process has to install a provider before the first
 /// client is built.
 fn install_crypto_provider() -> anyhow::Result<()> {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // Fails only when a provider is already installed, which is fine.
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
+    // `install_default` is backed by a process-wide `OnceLock`; a later call
+    // only returns the provider that is already installed, which is fine.
+    let _ = rustls::crypto::ring::default_provider().install_default();
     if rustls::crypto::CryptoProvider::get_default().is_some() {
         Ok(())
     } else {
