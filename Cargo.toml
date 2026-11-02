@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 askama = "0.16"
+futures = { version = "0.3.34", default-features = false }
 futures-concurrency = "7"
 askama_web = { version = "0.16", features = ["axum-0.8"] }
 axum = "0.8"

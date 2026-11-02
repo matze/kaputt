@@ -8,8 +8,6 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use futures_concurrency::future::Join;
-
 use crate::config::TargetConfig;
 use crate::db::{self, RunHead, Store, TargetHistory};
 use crate::probe::{Outcome, Prober};
@@ -239,16 +237,17 @@ pub async fn run(targets: &[TargetConfig], store: &Store, prober: &Prober) {
         .filter(|target| target.enabled)
         .map(|target| async move {
             let mut jitter = Jitter::seeded(&target.id);
+
             loop {
                 if let Err(err) = check_once(store, prober, target).await {
                     tracing::warn!(target = %target.id, %err, "check could not be recorded");
                 }
+
                 tokio::time::sleep(jitter.interval(target.interval_s)).await;
             }
         });
-    // An empty set is fine: the caller still joins this against the endless
-    // rollup loop, so the process keeps serving without probes.
-    let _: Vec<()> = probes.collect::<Vec<_>>().join().await;
+
+    futures::future::join_all(probes).await;
 }
 
 /// Small xorshift PRNG used only to spread probe times; not security relevant.
