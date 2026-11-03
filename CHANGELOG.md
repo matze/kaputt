@@ -8,6 +8,8 @@ and this project adheres to
 
 ## [Unreleased]
 
+## [0.9.0]
+
 ### Changed
 
 - The browser tab carries the overall state: title and favicon turn green when
