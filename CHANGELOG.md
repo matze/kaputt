@@ -8,6 +8,12 @@ and this project adheres to
 
 ## [Unreleased]
 
+### Changed
+
+- The browser tab carries the overall state: title and favicon turn green when
+  every target is up, amber after a single failed check, red during an
+  incident, and grey without data. The 30 s HTMX poll updates both in place.
+
 ## [0.8.0]
 
 ### Changed

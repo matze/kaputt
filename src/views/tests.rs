@@ -101,6 +101,7 @@ fn failure_notes_show_only_the_cause_label() {
         open_incident: None,
     };
     let failed_card = card(&failed, &day_stats(&[], &grid), &grid, now);
+    assert_eq!(failed_card.tone, "warn");
     assert_eq!(failed_card.note.as_deref(), Some("Falscher Status"));
     assert_eq!(
         failed_card.hover,
@@ -118,11 +119,45 @@ fn failure_notes_show_only_the_cause_label() {
         ..failed
     };
     let card = card(&down, &day_stats(&[], &grid), &grid, now);
+    assert_eq!(card.tone, "down");
     assert_eq!(card.note.as_deref(), Some("Zeitüberschreitung"));
     assert_eq!(
         card.hover,
         "nicht erreichbar seit 10 Min · Zeitüberschreitung"
     );
+}
+
+#[test]
+fn tab_status_reports_the_most_impaired_target() {
+    let all_up = tab_status(["up", "up"]);
+    assert_eq!((all_up.tone, all_up.label), ("up", "Alles gut"));
+    assert_eq!(tab_status(["up", "unknown"]).label, "Unbekannt");
+    assert_eq!(tab_status(["up", "warn"]).label, "Aussetzer");
+    assert_eq!(tab_status(["warn", "down", "up"]).label, "Störung");
+    assert_eq!(tab_status(["up"; 0]).label, "Unbekannt");
+}
+
+#[test]
+fn browser_tab_renders_status_title_and_favicon() {
+    let overview = OverviewPage {
+        targets: Vec::new(),
+        tab: tab_status(["down"]),
+    }
+    .render()
+    .expect("overview renders");
+    assert!(overview.contains("<title>Störung — kaputt.matze.lol</title>"));
+    assert!(overview.contains("%23cf222e"), "{overview}");
+
+    let partial = StatusPartial {
+        targets: Vec::new(),
+        tab: tab_status(["up"]),
+    }
+    .render()
+    .expect("partial renders");
+    assert!(partial.contains("<title>Alles gut — kaputt.matze.lol</title>"));
+    assert!(partial.contains("id=\"favicon\""));
+    assert!(partial.contains("hx-swap-oob=\"true\""));
+    assert!(partial.contains("%231a7f37"), "{partial}");
 }
 
 #[test]

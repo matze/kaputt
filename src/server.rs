@@ -157,7 +157,8 @@ async fn overview(State(app): State<App>) -> Result<impl IntoResponse, AppError>
     let now = db::unix_now();
     let states = app.store.enabled_targets().await?;
     let targets = cards(&app.store, &states, now).await?;
-    Ok(WebTemplate(views::OverviewPage { targets }))
+    let tab = views::tab_status(targets.iter().map(|target| target.tone));
+    Ok(WebTemplate(views::OverviewPage { targets, tab }))
 }
 
 /// The region HTMX replaces every 30 seconds; same markup as the page body.
@@ -165,7 +166,8 @@ async fn status_partial(State(app): State<App>) -> Result<impl IntoResponse, App
     let now = db::unix_now();
     let states = app.store.enabled_targets().await?;
     let targets = cards(&app.store, &states, now).await?;
-    Ok(WebTemplate(views::StatusPartial { targets }))
+    let tab = views::tab_status(targets.iter().map(|target| target.tone));
+    Ok(WebTemplate(views::StatusPartial { targets, tab }))
 }
 
 /// All enabled targets, one entry per incident batch.
@@ -260,6 +262,7 @@ async fn detail(
     let stats = views::day_stats(&rows, &grid);
     let last_24h = app.store.history_since(&state.id, now - 24 * 3600).await?;
     let target = views::card(&state, &stats, &grid, now);
+    let tab = views::tab_status([target.tone]);
     let windows = views::windows(&stats, views::totals(&last_24h));
 
     let checks = app.store.chart_since(&id, now - range.seconds()).await?;
@@ -273,6 +276,7 @@ async fn detail(
     let interval_s = i64::from(state.interval_s);
     Ok(WebTemplate(views::DetailPage {
         target,
+        tab,
         url: state.url,
         windows,
         range_links: views::range_links(&state.id, range),
@@ -284,6 +288,7 @@ async fn detail(
 
 async fn about(State(app): State<App>) -> Result<impl IntoResponse, AppError> {
     let states = app.store.enabled_targets().await?;
+    let tab = views::tab_status(states.iter().map(views::state_tone));
     Ok(WebTemplate(views::AboutPage {
         targets: states
             .iter()
@@ -293,6 +298,7 @@ async fn about(State(app): State<App>) -> Result<impl IntoResponse, AppError> {
                 interval: views::duration(i64::from(state.interval_s)),
             })
             .collect(),
+        tab,
     }))
 }
 

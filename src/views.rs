@@ -295,6 +295,77 @@ pub struct TargetCard {
     pub bars_note: String,
 }
 
+/// What the browser tab shows at a glance: the worst state among the targets,
+/// its German label and a matching favicon. The favicon colors repeat the
+/// stylesheet's light palette because a data URI cannot read CSS variables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TabStatus {
+    pub tone: &'static str,
+    pub label: &'static str,
+    pub icon: &'static str,
+}
+
+const ICON_UP: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%231a7f37'/%3E%3C/svg%3E";
+const ICON_WARN: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%239a6700'/%3E%3C/svg%3E";
+const ICON_DOWN: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%23cf222e'/%3E%3C/svg%3E";
+const ICON_UNKNOWN: &str = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='5' fill='%238b949e'/%3E%3C/svg%3E";
+
+impl TabStatus {
+    fn from_tone(tone: &'static str) -> Self {
+        match tone {
+            "down" => Self {
+                tone,
+                label: "Störung",
+                icon: ICON_DOWN,
+            },
+            "warn" => Self {
+                tone,
+                label: "Aussetzer",
+                icon: ICON_WARN,
+            },
+            "up" => Self {
+                tone,
+                label: "Alles gut",
+                icon: ICON_UP,
+            },
+            _ => Self {
+                tone: "unknown",
+                label: "Unbekannt",
+                icon: ICON_UNKNOWN,
+            },
+        }
+    }
+}
+
+fn severity(tone: &str) -> u8 {
+    match tone {
+        "down" => 3,
+        "warn" => 2,
+        "up" => 0,
+        _ => 1,
+    }
+}
+
+/// The tab always reports the most impaired target; one outage must not hide
+/// behind healthy neighbours. No target at all counts as unknown.
+pub fn tab_status(tones: impl IntoIterator<Item = &'static str>) -> TabStatus {
+    let worst = tones
+        .into_iter()
+        .max_by_key(|tone| severity(tone))
+        .unwrap_or("unknown");
+    TabStatus::from_tone(worst)
+}
+
+/// Tone of one target, shared by the row dot and the tab.
+pub fn state_tone(state: &TargetState) -> &'static str {
+    match (&state.open_incident, &state.last_check) {
+        (Some(_), _) => "down",
+        (None, Some(check)) if !check.ok => "warn",
+        (None, Some(_)) => "up",
+        (None, None) => "unknown",
+    }
+}
+
 fn check_error(check: &CheckSummary) -> String {
     error_note(check.error_kind.as_deref().unwrap_or("other"))
 }
@@ -303,7 +374,8 @@ fn check_error(check: &CheckSummary) -> String {
 /// day note and the 90-day uptime come from the daily rollups; everything
 /// about the newest check comes from the check itself.
 pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) -> TargetCard {
-    let (tone, meta, note) = match (&state.open_incident, &state.last_check) {
+    let tone = state_tone(state);
+    let (meta, note) = match (&state.open_incident, &state.last_check) {
         (Some(incident), _) => {
             let mut meta = format!(
                 "nicht erreichbar seit {}",
@@ -312,15 +384,13 @@ pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) ->
             if let Some(ok_ts) = state.last_ok_ts {
                 meta.push_str(&format!(" · zuletzt erreichbar {}", rel_short(now, ok_ts)));
             }
-            ("down", meta, Some(error_note(&incident.cause)))
+            (meta, Some(error_note(&incident.cause)))
         }
         (None, Some(check)) if !check.ok => (
-            "warn",
             format!("{} nicht geantwortet", rel_short(now, check.ts)),
             Some(check_error(check)),
         ),
         (None, Some(check)) => (
-            "up",
             format!(
                 "{} · {} · {}",
                 rel_short(now, check.ts),
@@ -332,7 +402,7 @@ pub fn card(state: &TargetState, stats: &[DayStat], grid: &DayGrid, now: i64) ->
             ),
             None,
         ),
-        (None, None) => ("unknown", "noch kein Check".to_string(), None),
+        (None, None) => ("noch kein Check".to_string(), None),
     };
 
     let measured = stats.iter().filter(|stat| stat.checks > 0).count();
@@ -1095,18 +1165,21 @@ pub fn range_links(target_id: &str, active: ChartRange) -> Vec<RangeLink> {
 #[template(path = "overview.html")]
 pub struct OverviewPage {
     pub targets: Vec<TargetCard>,
+    pub tab: TabStatus,
 }
 
 #[derive(Template)]
-#[template(path = "status.html")]
+#[template(path = "status_oob.html")]
 pub struct StatusPartial {
     pub targets: Vec<TargetCard>,
+    pub tab: TabStatus,
 }
 
 #[derive(Template)]
 #[template(path = "detail.html")]
 pub struct DetailPage {
     pub target: TargetCard,
+    pub tab: TabStatus,
     pub url: String,
     pub windows: Vec<Window>,
     pub range_links: Vec<RangeLink>,
@@ -1119,6 +1192,7 @@ pub struct DetailPage {
 #[template(path = "about.html")]
 pub struct AboutPage {
     pub targets: Vec<TargetLink>,
+    pub tab: TabStatus,
 }
 
 #[cfg(test)]

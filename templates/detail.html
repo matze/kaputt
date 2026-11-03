@@ -1,5 +1,6 @@
 {% extends "base.html" %}
-{% block title %}{{ target.name }} — kaputt.matze.lol{% endblock %}
+{% block title %}{{ tab.label }} — {{ target.name }} — kaputt.matze.lol{% endblock %}
+{% block icon %}{{ tab.icon }}{% endblock %}
 {% block feed %}<link rel="alternate" type="application/rss+xml" title="{{ target.name }}" href="{{ feed_href }}">{% endblock %}
 {% block content %}
 <h1 class="detail-name"><span class="dot tone-{{ target.tone }}" aria-hidden="true"></span>{{ target.name }}</h1>
